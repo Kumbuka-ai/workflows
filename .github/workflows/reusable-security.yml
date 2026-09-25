@@ -311,11 +311,18 @@ jobs:
           # job would then have computed leaks=0 and reported GREEN on a tree
           # with two secrets in it, which is the precise failure these gates
           # exist to prevent.
+          # -w /src and `dir .` rather than `dir /src`, because gitleaks builds
+          # its fingerprints from the path it was given: `/src/x.md:rule:12`
+          # against `x.md:rule:12`. A .gitleaksignore written against the first
+          # is tied to this mount point and useless when anyone runs gitleaks
+          # locally. Relative paths make an exception portable, which is the
+          # only way it can be reviewed where the file lives.
           docker run --rm \
             -v "$GITHUB_WORKSPACE":/src:ro \
             -v "$RUNNER_TEMP/gitleaks":/out \
+            -w /src \
             "$GITLEAKS_IMAGE" \
-            dir /src --no-banner --redact \
+            dir . --no-banner --redact \
             --report-format json --report-path /out/worktree.json --exit-code 0 \
             2> "$RUNNER_TEMP/gitleaks-dir.log"
           elapsed=$(( $(date +%s) - started ))
@@ -373,8 +380,9 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE":/src \
             -v "$RUNNER_TEMP/gitleaks":/out \
+            -w /src \
             "$GITLEAKS_IMAGE" \
-            git /src --no-banner --redact \
+            git . --no-banner --redact \
             --report-format json --report-path /out/history.json --exit-code 0 \
             2> "$RUNNER_TEMP/gitleaks-git.log"
           elapsed=$(( $(date +%s) - started ))
