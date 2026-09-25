@@ -61,6 +61,11 @@ on:
           someone else's project, which is how a vendored copy silently stops
           matching its upstream. Use this for `vendor/` and nothing else; a
           dependency this repository actually resolves belongs in the report.
+          Write a full glob — `**/vendor/**`, not `vendor`. With
+          --include-dev-deps in play a bare directory name stops matching nested
+          paths, and it fails silently: the scan simply keeps reporting, which
+          reads like the path was never skipped rather than like the pattern
+          was wrong.
         required: false
         type: string
         default: ""
