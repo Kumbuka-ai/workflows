@@ -22,6 +22,17 @@
 # Verified after the edit: the rule still matches a real webhook and still
 # ignores the placeholder.
 #
+# A SECOND deliberate edit, also to be reapplied on every refresh: the two
+# Java SQL rules — `jdbc-sqli` and `formatted-sql-string` — carry a
+# `paths.exclude` for test sources. Integration tests build SQL from
+# constants against a throwaway database; there is no untrusted input and
+# nothing to inject. Measured on one repository: 18 of 19 findings were
+# exactly this, across eight test classes.
+#
+# The exclusion is by path AND by rule, not by either alone: production code
+# is still checked by these rules, and test code is still checked by every
+# other rule. Verified both directions after the edit.
+#
 rules:
 - id: c.lang.security.insecure-use-gets-fn.insecure-use-gets-fn
   pattern: gets(...)
@@ -6133,6 +6144,18 @@ rules:
   severity: ERROR
   languages:
   - java
+  paths:
+    exclude:
+    - '*Test.java'
+    - '*IT.java'
+    - '*_test.go'
+    - '*.test.js'
+    - '*.test.ts'
+    - 'src/test/**'
+    - '**/src/test/**'
+    - 'tests/**'
+    - 'test/**'
+
 - id: java.lang.security.audit.http-response-splitting.http-response-splitting
   metadata:
     cwe:
@@ -8756,6 +8779,17 @@ rules:
     using 'connection.prepareStatement'.
   languages:
   - java
+  paths:
+    exclude:
+    - '*_test.go'
+    - '*.test.js'
+    - '*.test.ts'
+    - '*Test.java'
+    - '*IT.java'
+    - 'src/test/**'
+    - '**/src/test/**'
+    - 'tests/**'
+    - 'test/**'
   severity: WARNING
   patterns:
   - pattern-either:
