@@ -1,0 +1,106 @@
+# One table for every repository's security gates, refreshed daily.
+#
+# For a single repository, red is the overview: the run failed, the summary says
+# why. Across two dozen it stops being one — the same argument that replaced the
+# code-scanning view in the first place, arriving one order of magnitude later.
+#
+# This needs a token that can read other repositories' workflow runs. The token
+# a workflow gets is scoped to its own repository and cannot, so `OVERVIEW_TOKEN`
+# has to be provided as an organisation secret with `actions: read` and
+# `contents: read` across the organisation. Without it this workflow does
+# nothing and says so — the script in `scripts/` still runs locally against a
+# normal `gh` login, which is how it was built and how it can always be used.
+
+name: overview
+
+on:
+  schedule:
+    # After the repositories have scanned (04:05–04:55), so the table reflects
+    # the night rather than the morning before.
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  overview:
+    name: collect
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: check the token is there
+        id: gate
+        env:
+          OVERVIEW_TOKEN: ${{ secrets.OVERVIEW_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OVERVIEW_TOKEN:-}" ]; then
+            {
+              echo "### Overview skipped"
+              echo
+              echo "No \`OVERVIEW_TOKEN\` secret is set, so this workflow cannot read the"
+              echo "other repositories' runs. A workflow's own token is scoped to its own"
+              echo "repository."
+              echo
+              echo "To enable: add an organisation secret \`OVERVIEW_TOKEN\` with"
+              echo "\`actions: read\` and \`contents: read\` across the organisation."
+              echo
+              echo "Until then, run it locally — it needs nothing but a \`gh\` login:"
+              echo
+              echo '```'
+              echo "scripts/security-overview.sh"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "have_token=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_token=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: collect
+        if: steps.gate.outputs.have_token == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.OVERVIEW_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          bash scripts/security-overview.sh > overview.md
+          cat overview.md >> "$GITHUB_STEP_SUMMARY"
+
+      # One issue, updated. A new issue per day would bury the state it reports
+      # under its own history, which is the failure mode this exists to avoid.
+      - name: keep it in one issue
+        if: steps.gate.outputs.have_token == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.OVERVIEW_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          title="Security gates — state of every repository"
+          existing=$(gh issue list --repo "$REPO" --state open --search "$title in:title" \
+                       --json number --jq '.[0].number // empty' || true)
+
+          {
+            echo "_Refreshed $(date -u '+%Y-%m-%d %H:%M UTC') by the \`overview\` workflow._"
+            echo
+            cat overview.md
+          } > body.md
+
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --repo "$REPO" --body-file body.md
+            echo "updated issue #$existing"
+          else
+            gh issue create --repo "$REPO" --title "$title" --body-file body.md
+          fi
+
+      - name: keep the table
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-overview
+          path: overview.md
+          if-no-files-found: ignore
+          retention-days: 90

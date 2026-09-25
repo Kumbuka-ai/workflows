@@ -201,3 +201,15 @@ jobs:
           fi
 
           echo "Trivy image $IMAGE_NAME: $pkgs packages, nothing at $SEVERITY."
+
+      # Each job has its own workspace, so each uploads what it produced.
+      # The overview script reads these rather than scraping logs.
+      - name: keep the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-report-image-${{ matrix.target.name }}
+          path: |
+            trivy-image-*-report.json
+          if-no-files-found: ignore
+          retention-days: 30

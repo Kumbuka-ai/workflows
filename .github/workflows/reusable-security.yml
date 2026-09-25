@@ -85,6 +85,18 @@ jobs:
         with:
           workdir: ${{ inputs.semgrep-workdir }}
 
+      # Each job has its own workspace, so each uploads what it produced.
+      # The overview script reads these rather than scraping logs.
+      - name: keep the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-report-semgrep
+          path: |
+            semgrep-report.json
+          if-no-files-found: ignore
+          retention-days: 30
+
   trivy-fs:
     name: trivy (dependencies and filesystem)
     runs-on: ${{ inputs.runs-on }}
@@ -255,6 +267,18 @@ jobs:
 
           echo "Trivy filesystem: $pkgs packages over $targets target(s), nothing at $SEVERITY."
 
+      # Each job has its own workspace, so each uploads what it produced.
+      # The overview script reads these rather than scraping logs.
+      - name: keep the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-report-trivy-fs
+          path: |
+            trivy-fs-report.json
+          if-no-files-found: ignore
+          retention-days: 30
+
   gitleaks:
     name: gitleaks (secrets)
     runs-on: ${{ inputs.runs-on }}
@@ -390,3 +414,16 @@ jobs:
           fi
 
           echo "Gitleaks history: $commits commits scanned, no leaks."
+
+      # Each job has its own workspace, so each uploads what it produced.
+      # The overview script reads these rather than scraping logs.
+      - name: keep the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-report-gitleaks
+          path: |
+            gitleaks-worktree-report.json
+            gitleaks-history-report.json
+          if-no-files-found: ignore
+          retention-days: 30
