@@ -1,0 +1,392 @@
+# The security gates of the private repositories: Semgrep OSS, Trivy, Gitleaks.
+#
+# This replaces GitHub Advanced Security, which was switched off on 2026-09-25.
+# Without GHAS a private repository has no code-scanning view, so a finding has
+# nowhere to land and be read. A check whose result arrives nowhere is not a
+# check. Therefore every tool here runs as a job that turns the run RED on a
+# finding — the assurance is bound to a mechanism, not to a description.
+#
+# One workflow for all callers, on purpose. Copied into each repository the
+# checks would drift apart and a rule change would have to be made nine times;
+# here a change is one pull request and it reaches everyone. Where a repository
+# needs an exception, the exception belongs to that repository's own tool
+# configuration (.semgrepignore, .trivyignore, .gitleaksignore) — never to this
+# file, which must keep asking every repository the same question.
+#
+# Callers reference this at @main rather than at a commit. That is deliberate
+# and it is not a hole in the pinning: what must not drift is the *verdict* —
+# the scanner versions and the rule set — and those are pinned by digest and by
+# snapshot inside this file and the actions it calls. What must reach everyone
+# at once is a change to the checks themselves, which is exactly what @main
+# does and what a per-caller commit pin would prevent.
+#
+# The container-image scan is a separate workflow, `reusable-security-image.yml`.
+# It is separate because it has a matrix over the images a repository ships, and
+# a matrix built from an empty list is not an empty matrix — GitHub refuses the
+# workflow outright with a startup failure. Rather than carry a sentinel entry
+# so that a job can skip itself, the repositories that ship no image simply do
+# not call it.
+
+name: security
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: >-
+          Runner label set for every job here. Defaults to hosted. Self-hosted
+          runners are registered per repository, so a shared default pointing at
+          one would be wrong for every other caller.
+        required: false
+        type: string
+        default: ubuntu-latest
+      semgrep-workdir:
+        description: Directory Semgrep scans, relative to the workspace.
+        required: false
+        type: string
+        default: .
+      trivy-severity:
+        description: >-
+          Severities that turn the run red. Everything below is reported and
+          does not block. Lowering this is how a check stops being one, so it is
+          a knob with a documented default, not an opinion.
+        required: false
+        type: string
+        default: HIGH,CRITICAL
+      gitleaks-history:
+        description: >-
+          Also scan the git history, not only the working tree. A secret that
+          was committed and then removed is still a leaked secret.
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+
+  semgrep:
+    name: semgrep (static analysis)
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      # A mutable ref, deliberately and narrowly: this points at THIS
+      # organisation's own repository, where repointing it means opening a
+      # pull request against ourselves — not at a third party who can move a
+      # tag under us, which is the supply-chain attack the rule is about.
+      # Pinning it to a commit would also defeat the arrangement: a rule
+      # change must reach all nine repositories at once.
+      # The suppression must sit on the line immediately above the one it
+      # excuses — with prose in between, Semgrep does not see it.
+      # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
+      - uses: Kumbuka-ai/workflows/.github/actions/semgrep-scan@main
+        with:
+          workdir: ${{ inputs.semgrep-workdir }}
+
+  trivy-fs:
+    name: trivy (dependencies and filesystem)
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 20
+    env:
+      # Pinned by digest. Version behind it: trivy 0.74.0. The vulnerability
+      # database is deliberately NOT pinned — a vulnerability feed that cannot
+      # learn about yesterday's CVE is worse than useless. What is pinned is the
+      # scanner, so that a given tree and a given feed give a reproducible answer.
+      TRIVY_IMAGE: aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+      SEVERITY: ${{ inputs.trivy-severity }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: trivy filesystem scan
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/trivy-cache"
+
+          started=$(date +%s)
+          # --offline-scan is not a weakening of the check, it is what keeps it
+          # honest. Resolving Maven parents over the network makes the run
+          # depend on Maven Central answering, and Central answers 429 to CI
+          # ranges — measured 2026-09-25, a FATAL that aborts the scan. Offline,
+          # lockfile ecosystems (pnpm, npm) resolve completely; Maven resolves
+          # only what the POM declares. The full Maven closure is covered by the
+          # trivy-image job, which sees every jar that actually ships.
+          #
+          # --include-dev-deps is not optional either, it is what keeps the check
+          # from being empty. Trivy skips dev dependencies by default, and a test
+          # repository may declare nothing else: measured 2026-09-25 on such a
+          # repository, 0 packages resolved and a green report without the flag,
+          # 144 packages and 7 findings at HIGH or above with it. A test
+          # repository's dev dependencies ARE its dependencies.
+          # The repository's own risk register, if it keeps one. Conditional,
+          # because a repository with nothing to declare should not need a file
+          # to say so — and pointing --ignorefile at something absent is an error.
+          IGNORE_ARG=""
+          if [ -f "$GITHUB_WORKSPACE/.trivyignore.yaml" ]; then
+            IGNORE_ARG="--ignorefile /src/.trivyignore.yaml"
+            echo "Risk register in use:"
+            cat "$GITHUB_WORKSPACE/.trivyignore.yaml"
+          fi
+
+          # shellcheck disable=SC2086
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/src:ro \
+            -v "$RUNNER_TEMP/trivy-cache":/root/.cache/trivy \
+            "$TRIVY_IMAGE" fs /src $IGNORE_ARG \
+            --scanners vuln,misconfig,license \
+            --offline-scan \
+            --include-dev-deps \
+            --list-all-pkgs \
+            --format json --quiet \
+            > "$RUNNER_TEMP/trivy-fs.json"
+          elapsed=$(( $(date +%s) - started ))
+
+          cp "$RUNNER_TEMP/trivy-fs.json" "$GITHUB_WORKSPACE/trivy-fs-report.json"
+
+          pkgs=$(jq '[.Results[]?.Packages[]?] | length'         "$RUNNER_TEMP/trivy-fs.json")
+          targets=$(jq '[.Results[]?] | length'                  "$RUNNER_TEMP/trivy-fs.json")
+          vulns=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "$RUNNER_TEMP/trivy-fs.json")
+          misconf=$(jq '[.Results[]?.Misconfigurations[]?] | length' "$RUNNER_TEMP/trivy-fs.json")
+
+          {
+            echo "### Trivy — filesystem and dependencies"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| targets | $targets |"
+            echo "| packages resolved | $pkgs |"
+            echo "| vulnerabilities (all severities) | $vulns |"
+            echo "| misconfigurations | $misconf |"
+            echo "| runtime | ${elapsed}s |"
+            echo "| blocking severities | $SEVERITY |"
+            echo "| image | \`$TRIVY_IMAGE\` |"
+            echo
+            echo "| severity | count |"
+            echo "|---|---|"
+            jq -r '[.Results[]?.Vulnerabilities[]?.Severity] | group_by(.)
+                   | map({s: .[0], n: length}) | sort_by(-.n)[]
+                   | "| \(.s) | \(.n) |"' "$RUNNER_TEMP/trivy-fs.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "targets=$targets packages=$pkgs vulns=$vulns misconfigurations=$misconf"
+
+          # A scan that resolved no target looked at nothing — but there are two
+          # ways to look at nothing, and only one of them is a failure.
+          #
+          # If the tree carries no package manifest and no Dockerfile at all,
+          # then zero targets is the correct answer: a documentation repository
+          # has no dependencies to check, and failing it would be a gate that
+          # cannot ever be satisfied. If manifests ARE present and Trivy still
+          # resolved nothing, the scan did not do its job and green would be a
+          # lie. So the tree is asked first, and the answer decides.
+          manifests=$(find "$GITHUB_WORKSPACE" \
+            \( -path '*/.git' -o -path '*/node_modules' -o -path '*/target' \) -prune -o \
+            -type f \( -name 'pom.xml' -o -name 'package.json' -o -name 'go.mod' \
+                     -o -name 'Cargo.toml' -o -name 'Gemfile' -o -name 'composer.json' \
+                     -o -name 'requirements*.txt' -o -name 'Dockerfile*' \) -print 2>/dev/null | wc -l | tr -d ' ')
+
+          echo "manifests found in tree: $manifests"
+
+          if [ "$targets" -eq 0 ] && [ "$manifests" -gt 0 ]; then
+            echo "::error::Trivy resolved 0 targets although $manifests manifest(s) are present — the scan looked at nothing it should have seen, so its green verdict means nothing"
+            exit 1
+          fi
+
+          if [ "$targets" -eq 0 ]; then
+            echo "::notice::No package manifests in this repository, so there are no dependencies to check. Semgrep and Gitleaks still apply."
+          fi
+
+          echo "--- all findings (reported; only $SEVERITY block) ---"
+          jq -r '.Results[]? | .Target as $t | (.Vulnerabilities // [])[]
+                 | "\($t)  \(.Severity)  \(.PkgName)@\(.InstalledVersion)  \(.VulnerabilityID)  fixed:\(.FixedVersion // "-")"' \
+                 "$RUNNER_TEMP/trivy-fs.json" | sort || true
+
+          # Only a vulnerability that HAS a fix can block. A CVE upstream has not
+          # fixed is not a task, it is a state — and a gate that stays red on
+          # something nobody can act on is read for two weeks and ignored after
+          # that. This is not the sensitivity being lowered: every finding is
+          # still reported above, unfixed ones included. What changes is only
+          # which of them stops the run.
+          #
+          # The mechanism this buys is the point: an unfixed CVE blocks NOTHING
+          # today, and the moment upstream publishes a fix it stops being
+          # unfixed and blocks by itself. Nobody has to notice, and nobody has
+          # to remember.
+          #
+          # A fix that exists but cannot be adopted yet is the other case, and it
+          # belongs in .trivyignore.yaml with a reason and an expiry — see
+          # docs/SECURITY-GATES.md. That expiry is what forces the decision to be
+          # taken again rather than to lapse quietly.
+          blocking=$(jq --arg sev "$SEVERITY" \
+            '($sev | split(",")) as $s
+             | [ .Results[]?.Vulnerabilities[]?
+                 | select(.Severity as $x | $s | index($x))
+                 | select((.FixedVersion // "") != "") ] | length' \
+            "$RUNNER_TEMP/trivy-fs.json")
+
+          unfixed=$(jq --arg sev "$SEVERITY" \
+            '($sev | split(",")) as $s
+             | [ .Results[]?.Vulnerabilities[]?
+                 | select(.Severity as $x | $s | index($x))
+                 | select((.FixedVersion // "") == "") ] | length' \
+            "$RUNNER_TEMP/trivy-fs.json")
+
+          {
+            echo
+            echo "| at $SEVERITY | count |"
+            echo "|---|---|"
+            echo "| with a fix available (blocking) | $blocking |"
+            echo "| without a fix upstream (reported, not blocking) | $unfixed |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$unfixed" -gt 0 ]; then
+            echo "::warning::$unfixed vulnerability/ies at $SEVERITY have no fix upstream — reported, not blocking. They will block automatically once a fix is published."
+            jq -r '.Results[]? | (.Vulnerabilities // [])[]
+                   | select((.FixedVersion // "") == "")
+                   | "  UNFIXED \(.Severity)  \(.PkgName)@\(.InstalledVersion)  \(.VulnerabilityID)"' \
+                   "$RUNNER_TEMP/trivy-fs.json" | sort -u || true
+          fi
+
+          if [ "$blocking" -gt 0 ]; then
+            echo "::error::Trivy found $blocking fixable vulnerability/ies at $SEVERITY — see the job summary and trivy-fs-report.json"
+            exit 1
+          fi
+
+          echo "Trivy filesystem: $pkgs packages over $targets target(s), nothing at $SEVERITY."
+
+  gitleaks:
+    name: gitleaks (secrets)
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 20
+    env:
+      # Pinned by digest. Version behind it: gitleaks 8.30.1. The tool's own
+      # binary is used rather than gitleaks-action, which requires a paid
+      # licence key for organisation accounts.
+      GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+      SCAN_HISTORY: ${{ inputs.gitleaks-history }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          # 0 = the full history. A secret that was committed and later removed
+          # is still leaked, and only the history says so.
+          # Quoted on purpose: in a GitHub expression the number 0 is falsy, so
+          # `history && 0 || 1` evaluates to 1 — a shallow clone — exactly when
+          # the full history was asked for. The strings are both truthy.
+          fetch-depth: ${{ inputs.gitleaks-history && '0' || '1' }}
+
+      - name: gitleaks — working tree
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+
+          started=$(date +%s)
+          # The report goes to a mounted FILE, never to /dev/stdout. Gitleaks
+          # writes nothing at all to a piped /dev/stdout — measured 2026-09-25:
+          # it logged "leaks found: 2" while the JSON on stdout was empty. This
+          # job would then have computed leaks=0 and reported GREEN on a tree
+          # with two secrets in it, which is the precise failure these gates
+          # exist to prevent.
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/src:ro \
+            -v "$RUNNER_TEMP/gitleaks":/out \
+            "$GITLEAKS_IMAGE" \
+            dir /src --no-banner --redact \
+            --report-format json --report-path /out/worktree.json --exit-code 0 \
+            2> "$RUNNER_TEMP/gitleaks-dir.log"
+          elapsed=$(( $(date +%s) - started ))
+
+          cp "$RUNNER_TEMP/gitleaks/worktree.json" "$GITHUB_WORKSPACE/gitleaks-worktree-report.json"
+          cat "$RUNNER_TEMP/gitleaks-dir.log"
+
+          leaks=$(jq 'if . == null then 0 else length end' "$RUNNER_TEMP/gitleaks/worktree.json")
+          bytes=$(sed -n 's/.*scanned ~\([0-9]*\) bytes.*/\1/p' "$RUNNER_TEMP/gitleaks-dir.log" | tail -1)
+          bytes=${bytes:-0}
+          logged=$(sed -n 's/.*leaks found: \([0-9]*\).*/\1/p' "$RUNNER_TEMP/gitleaks-dir.log" | tail -1)
+          logged=${logged:-0}
+
+          {
+            echo "### Gitleaks — working tree"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| bytes scanned | $bytes |"
+            echo "| leaks | $leaks |"
+            echo "| runtime | ${elapsed}s |"
+            echo "| image | \`$GITLEAKS_IMAGE\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # The tool says how many it found in its log, and the report says which
+          # ones. If those two ever disagree the report cannot be trusted, and a
+          # green verdict drawn from it least of all.
+          if [ "$leaks" -ne "$logged" ]; then
+            echo "::error::Gitleaks logged $logged leak(s) but its JSON holds $leaks — the report is unreliable, so this verdict is not usable"
+            exit 1
+          fi
+
+          if [ "$bytes" -eq 0 ]; then
+            echo "::error::Gitleaks scanned 0 bytes — the check had no search space, so its green verdict means nothing"
+            exit 1
+          fi
+
+          if [ "$leaks" -gt 0 ]; then
+            jq -r '.[] | "\(.File):\(.StartLine)  \(.RuleID)"' "$RUNNER_TEMP/gitleaks/worktree.json"
+            echo "::error::Gitleaks found $leaks secret(s) in the working tree — see gitleaks-worktree-report.json"
+            exit 1
+          fi
+
+          echo "Gitleaks working tree: $bytes bytes scanned, no leaks."
+
+      - name: gitleaks — history
+        if: ${{ inputs.gitleaks-history }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+
+          started=$(date +%s)
+          # A mounted file, not /dev/stdout — see the working-tree step for what
+          # a piped report costs.
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/src \
+            -v "$RUNNER_TEMP/gitleaks":/out \
+            "$GITLEAKS_IMAGE" \
+            git /src --no-banner --redact \
+            --report-format json --report-path /out/history.json --exit-code 0 \
+            2> "$RUNNER_TEMP/gitleaks-git.log"
+          elapsed=$(( $(date +%s) - started ))
+
+          cp "$RUNNER_TEMP/gitleaks/history.json" "$GITHUB_WORKSPACE/gitleaks-history-report.json"
+          cat "$RUNNER_TEMP/gitleaks-git.log"
+
+          leaks=$(jq 'if . == null then 0 else length end' "$RUNNER_TEMP/gitleaks/history.json")
+          logged=$(sed -n 's/.*leaks found: \([0-9]*\).*/\1/p' "$RUNNER_TEMP/gitleaks-git.log" | tail -1)
+          logged=${logged:-0}
+          commits=$(git -C "$GITHUB_WORKSPACE" rev-list --count HEAD)
+
+          {
+            echo "### Gitleaks — history"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| commits in history | $commits |"
+            echo "| leaks | $leaks |"
+            echo "| runtime | ${elapsed}s |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$leaks" -ne "$logged" ]; then
+            echo "::error::Gitleaks logged $logged leak(s) but its JSON holds $leaks — the report is unreliable, so this verdict is not usable"
+            exit 1
+          fi
+
+          if [ "$commits" -eq 0 ]; then
+            echo "::error::Gitleaks saw 0 commits — the check had no search space, so its green verdict means nothing"
+            exit 1
+          fi
+
+          if [ "$leaks" -gt 0 ]; then
+            jq -r '.[] | "\(.Commit) \(.File):\(.StartLine)  \(.RuleID)"' "$RUNNER_TEMP/gitleaks/history.json"
+            echo "::error::Gitleaks found $leaks secret(s) in the history — see gitleaks-history-report.json"
+            exit 1
+          fi
+
+          echo "Gitleaks history: $commits commits scanned, no leaks."

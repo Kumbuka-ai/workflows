@@ -1,0 +1,102 @@
+# Semgrep OSS against the pinned community ruleset that sits next to this file.
+#
+# This is a composite action rather than a step in the reusable workflow for one
+# reason: a reusable workflow runs in the *calling* repository's checkout, so it
+# cannot reach a file in this repository. An action can — GitHub checks out the
+# action's repository to run it, and `github.action_path` points into that tree.
+# That is what carries `rules/semgrep-p-default.yaml` to every caller without a
+# token for this private repository and without copying the rules into each one.
+name: semgrep-scan
+description: Run Semgrep OSS against the pinned community ruleset and fail on any finding.
+
+inputs:
+  workdir:
+    description: Directory to scan, relative to the workspace.
+    required: false
+    default: .
+  report-path:
+    description: Where to write the JSON report, relative to the workspace.
+    required: false
+    default: semgrep-report.json
+
+outputs:
+  findings:
+    description: Number of findings.
+    value: ${{ steps.scan.outputs.findings }}
+  scanned-files:
+    description: Number of files Semgrep actually looked at.
+    value: ${{ steps.scan.outputs.scanned }}
+
+runs:
+  using: composite
+  steps:
+    - name: semgrep (pinned image, pinned rules)
+      id: scan
+      shell: bash
+      env:
+        # Pinned by digest, not by tag: a tag can be repointed at a different
+        # build, and a scanner that silently changes version silently changes
+        # its verdict. Version behind this digest: semgrep 1.178.0.
+        SEMGREP_IMAGE: semgrep/semgrep@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b
+        RULES: ${{ github.action_path }}/rules/semgrep-p-default.yaml
+        WORKDIR: ${{ inputs.workdir }}
+        REPORT: ${{ inputs.report-path }}
+      run: |
+        set -euo pipefail
+
+        started=$(date +%s)
+        docker run --rm \
+          -v "$GITHUB_WORKSPACE/$WORKDIR":/src:ro \
+          -v "$RULES":/rules.yaml:ro \
+          -w /src \
+          "$SEMGREP_IMAGE" \
+          semgrep scan --config=/rules.yaml --metrics=off --quiet --json \
+          > "$RUNNER_TEMP/semgrep.json"
+        elapsed=$(( $(date +%s) - started ))
+        cp "$RUNNER_TEMP/semgrep.json" "$GITHUB_WORKSPACE/$REPORT"
+
+        findings=$(jq '[.results[]?] | length' "$RUNNER_TEMP/semgrep.json")
+        scanned=$(jq '[.paths.scanned[]?] | length' "$RUNNER_TEMP/semgrep.json")
+
+        echo "findings=$findings" >> "$GITHUB_OUTPUT"
+        echo "scanned=$scanned"   >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### Semgrep OSS"
+          echo
+          echo "| | |"
+          echo "|---|---|"
+          echo "| files scanned | $scanned |"
+          echo "| findings | $findings |"
+          echo "| runtime | ${elapsed}s |"
+          echo "| ruleset | pinned snapshot of \`p/default\`, 1073 rules |"
+          echo "| image | \`$SEMGREP_IMAGE\` |"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        # An empty search space is a red result, not a green one. A scanner that
+        # reports "no findings" because it looked at nothing is the main failure
+        # mode of these tools, and it is indistinguishable from success unless
+        # something asserts the search space was not empty. This does.
+        if [ "$scanned" -eq 0 ]; then
+          echo "::error::Semgrep scanned 0 files — the check had no search space, so its green verdict means nothing"
+          exit 1
+        fi
+
+        if [ "$findings" -gt 0 ]; then
+          {
+            echo
+            echo "| rule | count |"
+            echo "|---|---|"
+            jq -r '[.results[]?.check_id | split(".") | last]
+                   | group_by(.) | map({rule: .[0], n: length})
+                   | sort_by(-.n)[] | "| `\(.rule)` | \(.n) |"' "$RUNNER_TEMP/semgrep.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "--- findings ---"
+          jq -r '.results[]? | "\(.path):\(.start.line)  \(.check_id)"' "$RUNNER_TEMP/semgrep.json"
+
+          echo "::error::Semgrep found $findings finding(s) — see the job summary and $REPORT"
+          exit 1
+        fi
+
+        echo "Semgrep: $scanned files scanned, no findings."

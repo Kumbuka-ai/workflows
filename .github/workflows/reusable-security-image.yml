@@ -1,0 +1,203 @@
+# Trivy against the container images a repository ships.
+#
+# Separate from `reusable-security.yml` rather than a job inside it, for a
+# mechanical reason: this has a matrix over the images, and a matrix built from
+# an empty list is not an empty matrix — GitHub refuses the whole workflow with
+# a startup failure before any `if:` is evaluated. The alternative would be a
+# sentinel entry so that a job could skip itself, which is a lie in the workflow
+# to work around a parser. Repositories that ship no image do not call this.
+#
+# For the Maven repositories this is not an extra, it is the dependency scan.
+# A filesystem scan of a pom.xml resolves only what the POM declares — the
+# transitive closure needs the network, and Maven Central answers 429 to CI
+# ranges. The image carries every jar that actually ships, so scanning it is
+# both complete and offline. It also covers the base image's OS packages, which
+# CodeQL never looked at.
+
+name: security (images)
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner label set. Defaults to hosted.
+        required: false
+        type: string
+        default: ubuntu-latest
+      trivy-severity:
+        description: Severities that turn the run red. Everything below is reported.
+        required: false
+        type: string
+        default: HIGH,CRITICAL
+      image-targets:
+        description: >-
+          JSON array, one object per image:
+          {"name": "...", "context": ".", "file": "Dockerfile", "build-args": ""}.
+          A list, not a single image, because a repository may ship more than one
+          — a backend and a frontend, say — and scanning one of two would report
+          a coverage the repository does not have.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+
+  trivy-image:
+    name: trivy (image ${{ matrix.target.name }})
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(inputs.image-targets) }}
+    permissions:
+      contents: read
+      packages: read
+    env:
+      # Pinned by digest. Version behind it: trivy 0.74.0.
+      TRIVY_IMAGE: aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+      SEVERITY: ${{ inputs.trivy-severity }}
+      IMAGE_NAME: ${{ matrix.target.name }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      # The image is built here rather than taken from the chain's own image job
+      # on purpose: this workflow must not reach into another job's artefacts,
+      # and it must not require an existing job to be changed. The cost is a
+      # second build; the gain is that this job is self-contained and whatever
+      # the repository already does stays untouched.
+      - name: build image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ${{ matrix.target.context || '.' }}
+          file: ${{ matrix.target.file || 'Dockerfile' }}
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: security-scan:${{ matrix.target.name }}
+          build-args: ${{ matrix.target['build-args'] || '' }}
+          # Both build secrets every caller's Dockerfile might mount, because
+          # this job has to build the same image the chain builds and a missing
+          # one aborts that build. Measured 2026-09-25: a frontend Dockerfile
+          # mounting `npm_token` fails `pnpm install` with exit 1 without it, and
+          # the scan then reports a failure saying nothing about the image.
+          # They carry the same value, and a secret a Dockerfile does not mount
+          # is simply unused — so passing both costs nothing and removes a class
+          # of false red.
+          secrets: |
+            "gh_packages_token=${{ secrets.GITHUB_TOKEN }}"
+            "npm_token=${{ secrets.GITHUB_TOKEN }}"
+
+      - name: trivy image scan
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/trivy-cache"
+
+          started=$(date +%s)
+          # Same register as the filesystem scan. It has to be mounted explicitly
+          # here: this job talks to the docker socket, not to the checkout.
+          IGNORE_ARG=""
+          IGNORE_MOUNT=""
+          if [ -f "$GITHUB_WORKSPACE/.trivyignore.yaml" ]; then
+            IGNORE_ARG="--ignorefile /ignore/.trivyignore.yaml"
+            IGNORE_MOUNT="-v $GITHUB_WORKSPACE/.trivyignore.yaml:/ignore/.trivyignore.yaml:ro"
+            echo "Risk register in use:"
+            cat "$GITHUB_WORKSPACE/.trivyignore.yaml"
+          fi
+
+          # shellcheck disable=SC2086
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$RUNNER_TEMP/trivy-cache":/root/.cache/trivy \
+            $IGNORE_MOUNT \
+            "$TRIVY_IMAGE" image "security-scan:$IMAGE_NAME" $IGNORE_ARG \
+            --scanners vuln \
+            --list-all-pkgs \
+            --format json --quiet \
+            > "$RUNNER_TEMP/trivy-image.json"
+          elapsed=$(( $(date +%s) - started ))
+
+          cp "$RUNNER_TEMP/trivy-image.json" "$GITHUB_WORKSPACE/trivy-image-$IMAGE_NAME-report.json"
+
+          pkgs=$(jq '[.Results[]?.Packages[]?] | length'         "$RUNNER_TEMP/trivy-image.json")
+          targets=$(jq '[.Results[]?] | length'                  "$RUNNER_TEMP/trivy-image.json")
+          vulns=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "$RUNNER_TEMP/trivy-image.json")
+
+          {
+            echo "### Trivy — image \`$IMAGE_NAME\`"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| targets | $targets |"
+            echo "| packages in image | $pkgs |"
+            echo "| vulnerabilities (all severities) | $vulns |"
+            echo "| runtime (scan only) | ${elapsed}s |"
+            echo "| blocking severities | $SEVERITY |"
+            echo "| image | \`$TRIVY_IMAGE\` |"
+            echo
+            echo "| severity | count |"
+            echo "|---|---|"
+            jq -r '[.Results[]?.Vulnerabilities[]?.Severity] | group_by(.)
+                   | map({s: .[0], n: length}) | sort_by(-.n)[]
+                   | "| \(.s) | \(.n) |"' "$RUNNER_TEMP/trivy-image.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "targets=$targets packages=$pkgs vulns=$vulns"
+
+          # An image with no packages means the scan looked at nothing — which is
+          # exactly what a green verdict would otherwise hide.
+          if [ "$pkgs" -eq 0 ]; then
+            echo "::error::Trivy found 0 packages in $IMAGE_NAME — the check had no search space, so its green verdict means nothing"
+            exit 1
+          fi
+
+          echo "--- all findings (reported; only $SEVERITY block) ---"
+          jq -r '.Results[]? | .Target as $t | (.Vulnerabilities // [])[]
+                 | "\($t)  \(.Severity)  \(.PkgName)@\(.InstalledVersion)  \(.VulnerabilityID)  fixed:\(.FixedVersion // "-")"' \
+                 "$RUNNER_TEMP/trivy-image.json" | sort || true
+
+          # Only a fixable vulnerability blocks — see the filesystem job for the
+          # reasoning. It matters most here: a base image carries OS packages
+          # whose CVEs are routinely unfixed for months — a RedHat 9.8 layer
+          # carrying pcre2 with `fixed:-` is the worked example. Blocking on
+          # those would make this job permanently red without a single action
+          # anyone could take.
+          blocking=$(jq --arg sev "$SEVERITY" \
+            '($sev | split(",")) as $s
+             | [ .Results[]?.Vulnerabilities[]?
+                 | select(.Severity as $x | $s | index($x))
+                 | select((.FixedVersion // "") != "") ] | length' \
+            "$RUNNER_TEMP/trivy-image.json")
+
+          unfixed=$(jq --arg sev "$SEVERITY" \
+            '($sev | split(",")) as $s
+             | [ .Results[]?.Vulnerabilities[]?
+                 | select(.Severity as $x | $s | index($x))
+                 | select((.FixedVersion // "") == "") ] | length' \
+            "$RUNNER_TEMP/trivy-image.json")
+
+          {
+            echo
+            echo "| at $SEVERITY | count |"
+            echo "|---|---|"
+            echo "| with a fix available (blocking) | $blocking |"
+            echo "| without a fix upstream (reported, not blocking) | $unfixed |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$unfixed" -gt 0 ]; then
+            echo "::warning::$unfixed vulnerability/ies at $SEVERITY in $IMAGE_NAME have no fix upstream — reported, not blocking. They will block automatically once a fix is published."
+            jq -r '.Results[]? | (.Vulnerabilities // [])[]
+                   | select((.FixedVersion // "") == "")
+                   | "  UNFIXED \(.Severity)  \(.PkgName)@\(.InstalledVersion)  \(.VulnerabilityID)"' \
+                   "$RUNNER_TEMP/trivy-image.json" | sort -u || true
+          fi
+
+          if [ "$blocking" -gt 0 ]; then
+            echo "::error::Trivy found $blocking fixable vulnerability/ies at $SEVERITY in $IMAGE_NAME"
+            exit 1
+          fi
+
+          echo "Trivy image $IMAGE_NAME: $pkgs packages, nothing at $SEVERITY."
