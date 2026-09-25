@@ -53,6 +53,17 @@ on:
         required: false
         type: string
         default: HIGH,CRITICAL
+      trivy-skip-dirs:
+        description: >-
+          Comma-separated directories Trivy does not scan, for vendored trees.
+          A vendored dependency is not installed from a lockfile — it is already
+          in the repository — so raising its version means editing a copy of
+          someone else's project, which is how a vendored copy silently stops
+          matching its upstream. Use this for `vendor/` and nothing else; a
+          dependency this repository actually resolves belongs in the report.
+        required: false
+        type: string
+        default: ""
       gitleaks-history:
         description: >-
           Also scan the git history, not only the working tree. A secret that
@@ -108,6 +119,7 @@ jobs:
       # scanner, so that a given tree and a given feed give a reproducible answer.
       TRIVY_IMAGE: aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
       SEVERITY: ${{ inputs.trivy-severity }}
+      SKIP_DIRS: ${{ inputs.trivy-skip-dirs }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
@@ -134,6 +146,15 @@ jobs:
           # The repository's own risk register, if it keeps one. Conditional,
           # because a repository with nothing to declare should not need a file
           # to say so — and pointing --ignorefile at something absent is an error.
+          SKIP_ARG=""
+          if [ -n "${SKIP_DIRS:-}" ]; then
+            IFS=',' read -ra _dirs <<< "$SKIP_DIRS"
+            for d in "${_dirs[@]}"; do
+              SKIP_ARG="$SKIP_ARG --skip-dirs $(echo "$d" | xargs)"
+            done
+            echo "Skipping: $SKIP_DIRS"
+          fi
+
           IGNORE_ARG=""
           if [ -f "$GITHUB_WORKSPACE/.trivyignore.yaml" ]; then
             IGNORE_ARG="--ignorefile /src/.trivyignore.yaml"
@@ -145,7 +166,7 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE":/src:ro \
             -v "$RUNNER_TEMP/trivy-cache":/root/.cache/trivy \
-            "$TRIVY_IMAGE" fs /src $IGNORE_ARG \
+            "$TRIVY_IMAGE" fs /src $IGNORE_ARG $SKIP_ARG \
             --scanners vuln,misconfig,license \
             --offline-scan \
             --include-dev-deps \
