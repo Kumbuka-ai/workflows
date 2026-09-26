@@ -79,6 +79,20 @@ jobs:
           load: true
           tags: security-scan:${{ matrix.target.name }}
           build-args: ${{ matrix.target['build-args'] || '' }}
+          # No provenance attestation on a throwaway scan image.
+          #
+          # With it, buildx attaches an attestation describing the build —
+          # including packages from intermediate stages that never reach the
+          # final filesystem. Trivy reads those and reports them with no file
+          # path, which is indistinguishable from a real finding except that
+          # nothing in the image has that version. Measured: a Python image
+          # reported msgpack 1.1.2 and setuptools 70.3.0 alongside the 1.2.2 and
+          # 84.0.0 actually installed, the old pair carrying `FilePath: -`.
+          #
+          # The image is built here only to be scanned and discarded, so the
+          # attestation has no reader and costs a class of phantom finding.
+          provenance: false
+          sbom: false
           # Both build secrets every caller's Dockerfile might mount, because
           # this job has to build the same image the chain builds and a missing
           # one aborts that build. Measured 2026-09-25: a frontend Dockerfile
