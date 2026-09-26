@@ -218,11 +218,27 @@ jobs:
           # cannot ever be satisfied. If manifests ARE present and Trivy still
           # resolved nothing, the scan did not do its job and green would be a
           # lie. So the tree is asked first, and the answer decides.
-          manifests=$(find "$GITHUB_WORKSPACE" \
+          manifest_list=$(find "$GITHUB_WORKSPACE" \
             \( -path '*/.git' -o -path '*/node_modules' -o -path '*/target' \) -prune -o \
             -type f \( -name 'pom.xml' -o -name 'package.json' -o -name 'go.mod' \
                      -o -name 'Cargo.toml' -o -name 'Gemfile' -o -name 'composer.json' \
-                     -o -name 'requirements*.txt' -o -name 'Dockerfile*' \) -print 2>/dev/null | wc -l | tr -d ' ')
+                     -o -name 'requirements*.txt' -o -name 'Dockerfile*' \) -print 2>/dev/null || true)
+
+          # Whatever the scan was told to skip does not count here either.
+          # Counting a manifest nobody asked Trivy to look at turns this check
+          # into a contradiction: it fails because it found nothing where it was
+          # told not to search.
+          if [ -n "${SKIP_DIRS:-}" ]; then
+            IFS=',' read -ra _pd <<< "$SKIP_DIRS"
+            for d in "${_pd[@]}"; do
+              d=$(echo "$d" | xargs | sed 's#^\*\*/##; s#/\*\*$##')
+              [ -z "$d" ] && continue
+              manifest_list=$(printf '%s\n' "$manifest_list" | grep -v "/$d/" || true)
+            done
+          fi
+
+          manifests=$(printf '%s\n' "$manifest_list" | grep -c . || true)
+          manifests=${manifests:-0}
 
           echo "manifests found in tree: $manifests"
 
