@@ -20,7 +20,15 @@ on:
   workflow_call:
     inputs:
       runs-on:
-        description: Runner label set. Defaults to hosted.
+        description: >-
+          Runner label set. Defaults to hosted, and the default stays hosted on
+          purpose: this workflow is called by public repositories too, and a
+          self-hosted default would hand anyone who opens a fork pull request a
+          machine to run their code on.
+
+          The private repositories of this organisation pass `apollo`. One
+          label is enough — only those agents carry it, and they are registered
+          into a runner group with selected repositories.
         required: false
         type: string
         default: ubuntu-latest
