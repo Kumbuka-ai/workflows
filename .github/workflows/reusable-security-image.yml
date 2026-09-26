@@ -130,9 +130,23 @@ jobs:
             cat "$GITHUB_WORKSPACE/.trivyignore.yaml"
           fi
 
+          # The socket this runner actually talks to. A hosted runner has it at
+          # /var/run/docker.sock and DOCKER_HOST is unset; a rootless daemon has
+          # it under $XDG_RUNTIME_DIR and says so in DOCKER_HOST. Mounting the
+          # fixed path on a rootless machine mounts nothing, and Trivy then
+          # reports the image as not found -- "Cannot connect to the Docker
+          # daemon at unix:///var/run/docker.sock" -- after the build step has
+          # already succeeded, which reads like a broken image rather than a
+          # missing mount. Measured on apollo 2026-09-26 across five
+          # repositories. Inside the container it stays at the default path,
+          # because that is where Trivy looks; only the host side moves.
+          DOCKER_SOCK="${DOCKER_HOST#unix://}"
+          [ -S "${DOCKER_SOCK:-}" ] || DOCKER_SOCK=/var/run/docker.sock
+          echo "docker socket: $DOCKER_SOCK"
+
           # shellcheck disable=SC2086
           docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$DOCKER_SOCK":/var/run/docker.sock \
             -v "$RUNNER_TEMP/trivy-cache":/root/.cache/trivy \
             $IGNORE_MOUNT \
             "$TRIVY_IMAGE" image "security-scan:$IMAGE_NAME" $IGNORE_ARG \
