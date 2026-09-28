@@ -141,14 +141,17 @@ jobs:
           # repositories. Inside the container it stays at the default path,
           # because that is where Trivy looks; only the host side moves.
           #
-          # The expansion takes two steps because DOCKER_HOST not being set is
-          # the ordinary case, not the exception -- it is unset on a hosted
-          # runner and on the Sysbox slots on apollo. Under `set -u` a bare
-          # `${DOCKER_HOST#unix://}` does not yield the empty string there, it
+          # The expansion takes two steps because DOCKER_HOST may not be set
+          # at all, and that is a case the line has to survive rather than the
+          # exception it looks like: a hosted runner leaves it unset, while an
+          # apollo slot sets it to unix:///var/run/docker.sock. Measured
+          # 2026-09-28 on both. Under `set -u` a bare `${DOCKER_HOST#unix://}`
+          # does not yield the empty string where the variable is unset -- it
           # aborts the step with "DOCKER_HOST: unbound variable" before the
-          # fallback on the line below is ever reached. `${DOCKER_HOST:-}` turns
-          # the unset case into an empty string first; only then is the prefix
-          # stripped.
+          # fallback on the line below is ever reached, so the one case the
+          # fallback exists for is the one that never gets there.
+          # `${DOCKER_HOST:-}` turns unset into an empty string first; only
+          # then is the prefix stripped.
           DOCKER_SOCK="${DOCKER_HOST:-}"
           DOCKER_SOCK="${DOCKER_SOCK#unix://}"
           [ -S "${DOCKER_SOCK:-}" ] || DOCKER_SOCK=/var/run/docker.sock
