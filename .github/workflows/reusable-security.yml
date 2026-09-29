@@ -344,6 +344,29 @@ jobs:
             echo "| without a fix upstream (reported, not blocking) | $unfixed |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # WHAT IS BLOCKING, NAMED, IN THE SUMMARY. A count answers "is it red";
+          # it does not answer the only question anyone has when it is, which is
+          # what to upgrade. See the image job for the case that prompted this.
+          if [ "$blocking" -gt 0 ]; then
+            {
+              echo
+              echo "#### What blocks this build"
+              echo
+              echo "| severity | package | installed | fixed in | advisory | target |"
+              echo "|---|---|---|---|---|---|"
+              jq -r --arg sev "$SEVERITY" '
+                ($sev | split(",")) as $s
+                | [ .Results[]? | .Target as $t | (.Vulnerabilities // [])[]
+                    | select(.Severity as $x | $s | index($x))
+                    | select((.FixedVersion // "") != "")
+                    | {t:$t, sev:.Severity, pkg:.PkgName, cur:.InstalledVersion,
+                       fix:.FixedVersion, id:.VulnerabilityID} ]
+                | unique_by([.pkg, .id]) | sort_by(.sev, .pkg) | .[]
+                | "| \(.sev) | `\(.pkg)` | `\(.cur)` | **\(.fix)** | [\(.id)](https://nvd.nist.gov/vuln/detail/\(.id)) | \(.t) |"' \
+                "$RUNNER_TEMP/trivy-fs.json"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           if [ "$unfixed" -gt 0 ]; then
             echo "::warning::$unfixed vulnerability/ies at $SEVERITY have no fix upstream — reported, not blocking. They will block automatically once a fix is published."
             jq -r '.Results[]? | (.Vulnerabilities // [])[]
@@ -353,7 +376,38 @@ jobs:
           fi
 
           if [ "$blocking" -gt 0 ]; then
-            echo "::error::Trivy found $blocking fixable vulnerability/ies at $SEVERITY — see the job summary and trivy-fs-report.json"
+            # ONE ANNOTATION PER FINDING, AND EACH ONE NAMES THE UPGRADE.
+            # Annotations are the first thing a reader sees, and the only one
+            # this job used to emit was a count. Every fixed version is printed
+            # rather than the first: Trivy lists one per release line, and the
+            # first is frequently BELOW the installed version, so naming it
+            # alone would be advice to downgrade.
+            jq -r --arg sev "$SEVERITY" '
+              ($sev | split(",")) as $s
+              | [ .Results[]? | (.Vulnerabilities // [])[]
+                  | select(.Severity as $x | $s | index($x))
+                  | select((.FixedVersion // "") != "")
+                  | {sev:.Severity, pkg:.PkgName, cur:.InstalledVersion,
+                     fix:.FixedVersion, id:.VulnerabilityID} ]
+              | unique_by([.pkg, .id]) | sort_by(.sev, .pkg) | .[]
+              | "::error::\(.id) \(.sev) — \(.pkg) \(.cur), fixed in \(.fix)"' \
+              "$RUNNER_TEMP/trivy-fs.json"
+            # $blocking counts findings as Trivy reports them, one per target
+            # the CVE was found in; the annotations above are one per
+            # (package, CVE). See the image job for why both numbers are named
+            # when they differ.
+            distinct=$(jq --arg sev "$SEVERITY" \
+              '($sev | split(",")) as $s
+               | [ .Results[]?.Vulnerabilities[]?
+                   | select(.Severity as $x | $s | index($x))
+                   | select((.FixedVersion // "") != "")
+                   | {pkg:.PkgName, id:.VulnerabilityID} ] | unique | length' \
+              "$RUNNER_TEMP/trivy-fs.json")
+            if [ "$distinct" = "$blocking" ]; then
+              echo "::error::Trivy found $blocking fixable vulnerability/ies at $SEVERITY — each one is annotated above, and the job summary lists them with links"
+            else
+              echo "::error::Trivy found $blocking fixable finding(s) at $SEVERITY, $distinct distinct package/CVE pair(s) — each pair is annotated above, and the job summary lists them with links"
+            fi
             exit 1
           fi
 
