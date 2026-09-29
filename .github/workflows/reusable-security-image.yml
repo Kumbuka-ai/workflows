@@ -303,6 +303,32 @@ jobs:
             echo "| without a fix upstream (reported, not blocking) | $unfixed |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # WHAT IS BLOCKING, NAMED, AT THE TOP OF THE SUMMARY. A count answers
+          # "is it red"; it does not answer the only question anyone has when it
+          # is, which is what to upgrade. Until this table existed the CVE was in
+          # the job log and nowhere else: the annotation said "1 fixable
+          # vulnerability", the summary said "1", and a reader had to open the
+          # job and scroll to find out that it was jackson-databind.
+          if [ "$blocking" -gt 0 ]; then
+            {
+              echo
+              echo "#### What blocks this build"
+              echo
+              echo "| severity | package | installed | fixed in | advisory | target |"
+              echo "|---|---|---|---|---|---|"
+              jq -r --arg sev "$SEVERITY" '
+                ($sev | split(",")) as $s
+                | [ .Results[]? | .Target as $t | (.Vulnerabilities // [])[]
+                    | select(.Severity as $x | $s | index($x))
+                    | select((.FixedVersion // "") != "")
+                    | {t:$t, sev:.Severity, pkg:.PkgName, cur:.InstalledVersion,
+                       fix:.FixedVersion, id:.VulnerabilityID} ]
+                | unique_by([.pkg, .id]) | sort_by(.sev, .pkg) | .[]
+                | "| \(.sev) | `\(.pkg)` | `\(.cur)` | **\(.fix)** | [\(.id)](https://nvd.nist.gov/vuln/detail/\(.id)) | \(.t) |"' \
+                "$RUNNER_TEMP/trivy-image.json"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           if [ "$unfixed" -gt 0 ]; then
             echo "::warning::$unfixed vulnerability/ies at $SEVERITY in $IMAGE_NAME have no fix upstream — reported, not blocking. They will block automatically once a fix is published."
             jq -r '.Results[]? | (.Vulnerabilities // [])[]
@@ -312,7 +338,49 @@ jobs:
           fi
 
           if [ "$blocking" -gt 0 ]; then
-            echo "::error::Trivy found $blocking fixable vulnerability/ies at $SEVERITY in $IMAGE_NAME"
+            # ONE ANNOTATION PER FINDING, AND EACH ONE NAMES THE UPGRADE.
+            # Annotations are what a reader sees first — in the checks list, on
+            # the PR, in the run's header — and until now the only one said
+            # "Trivy found N fixable vulnerability/ies", which is a number, not
+            # a thing to do. Now the first screen carries the package, the
+            # version in the image and the versions that carry the fix.
+            #
+            # EVERY FIXED VERSION IS PRINTED, NOT THE FIRST. Trivy lists one per
+            # release line — jackson-databind 2.21.4 reports
+            # `2.18.10, 2.21.6, 2.22.2` — and the first entry is frequently
+            # BELOW the installed version. An annotation reading "upgrade to
+            # 2.18.10" would be advice to downgrade, which is worse than no
+            # advice. Which line to follow is the caller's decision; this says
+            # where the fixes are.
+            jq -r --arg sev "$SEVERITY" --arg img "$IMAGE_NAME" '
+              ($sev | split(",")) as $s
+              | [ .Results[]? | (.Vulnerabilities // [])[]
+                  | select(.Severity as $x | $s | index($x))
+                  | select((.FixedVersion // "") != "")
+                  | {sev:.Severity, pkg:.PkgName, cur:.InstalledVersion,
+                     fix:.FixedVersion, id:.VulnerabilityID} ]
+              | unique_by([.pkg, .id]) | sort_by(.sev, .pkg) | .[]
+              | "::error::\($img): \(.id) \(.sev) — \(.pkg) \(.cur), fixed in \(.fix)"' \
+              "$RUNNER_TEMP/trivy-image.json"
+            # THE TWO NUMBERS ARE NOT THE SAME NUMBER, and saying so is cheaper
+            # than letting a reader find the discrepancy. $blocking counts
+            # findings as Trivy reports them — the same CVE in the same package
+            # appears once per target it was found in — while the annotations
+            # above are one per (package, CVE). A summary line claiming "each of
+            # 3 is annotated" above two annotations would read as a bug in the
+            # gate.
+            distinct=$(jq --arg sev "$SEVERITY" \
+              '($sev | split(",")) as $s
+               | [ .Results[]?.Vulnerabilities[]?
+                   | select(.Severity as $x | $s | index($x))
+                   | select((.FixedVersion // "") != "")
+                   | {pkg:.PkgName, id:.VulnerabilityID} ] | unique | length' \
+              "$RUNNER_TEMP/trivy-image.json")
+            if [ "$distinct" = "$blocking" ]; then
+              echo "::error::Trivy found $blocking fixable vulnerability/ies at $SEVERITY in $IMAGE_NAME — each one is annotated above, and the job summary lists them with links"
+            else
+              echo "::error::Trivy found $blocking fixable finding(s) at $SEVERITY in $IMAGE_NAME, $distinct distinct package/CVE pair(s) — each pair is annotated above, and the job summary lists them with links"
+            fi
             exit 1
           fi
 
