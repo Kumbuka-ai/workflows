@@ -181,12 +181,30 @@ jobs:
           echo "docker socket: $DOCKER_SOCK"
 
           # shellcheck disable=SC2086
+          # TRIVY'S OWN TIMEOUT, RAISED FROM ITS 5-MINUTE DEFAULT (satellite/29.17).
+          # The scan fails as `context deadline exceeded` when the five minutes run
+          # out, and on this build host they run out under load rather than because
+          # anything is wrong with the image: measured 2026-09-29, the same scan that
+          # fails with thirteen jobs on the machine passes on an idle one. A deadline
+          # that is a function of how busy the neighbours are is not a finding about
+          # the code under test.
+          #
+          # THIS RAISES THE PATIENCE, NOT THE BAR. No scanner is skipped, no analyser
+          # is switched off, no severity is downgraded, and `--exit-code`/the
+          # blocking logic below are untouched: a vulnerability that was blocking
+          # before this line is blocking after it. The only thing that changes is how
+          # long Trivy waits before giving up on itself.
+          #
+          # Pre-seeding Trivy's databases into the golden image would remove the
+          # download from the job altogether and is the obvious next lever — it is a
+          # decision of its own and deliberately not part of this repair.
           docker run --rm \
             -v "$DOCKER_SOCK":/var/run/docker.sock \
             -v "$RUNNER_TEMP/trivy-cache":/root/.cache/trivy \
             $IGNORE_MOUNT \
             "$TRIVY_IMAGE" image "security-scan:$IMAGE_NAME" $IGNORE_ARG \
             --scanners vuln \
+            --timeout 15m \
             --list-all-pkgs \
             --format json --quiet \
             > "$RUNNER_TEMP/trivy-image.json"
