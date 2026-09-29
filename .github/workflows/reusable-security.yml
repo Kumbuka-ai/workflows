@@ -191,12 +191,38 @@ jobs:
           # Pre-seeding Trivy's databases into the golden image would remove the
           # download from the job altogether and is the obvious next lever — it is a
           # decision of its own and deliberately not part of this repair.
+          # THE CANONICAL DATABASE FIRST, AND THE ORDER IS THE WHOLE POINT
+          # (satellite/29.17). Trivy's default is the list
+          # [mirror.gcr.io/aquasec/trivy-db:2, ghcr.io/aquasecurity/trivy-db:2], and
+          # on 2026-09-28 and 2026-09-29 the Google mirror answered a layer download
+          # with `404 Not Found` — twice, in infra and ee-memory, and the job died
+          # with `failed to download vulnerability DB` rather than trying the second
+          # entry.
+          #
+          # THAT IS NOT A FALLBACK CHAIN, measured 2026-09-29 in a job container:
+          #
+          #   --db-repository kumbuka.invalid/x:1                      rc=1
+          #   --db-repository kumbuka.invalid/x:1,ghcr.io/…/trivy-db:2 rc=1  ← still
+          #   --db-repository ghcr.io/…/trivy-db:2,mirror.gcr.io/…:2   rc=0
+          #
+          # A download failure on the FIRST entry ends the attempt; the second entry
+          # does not rescue it. So the list is a priority order and nothing else, and
+          # which repository is first is the only decision it expresses. Put the one
+          # Aqua Security publishes itself first — it is where the mirror mirrors
+          # from, and it is not the one that produced the 404. The mirror stays as
+          # the second entry: it costs nothing and covers the failure classes where
+          # the fallback does work.
+          #
+          # This changes where the database comes from, not what it contains. No
+          # scanner, analyser or severity is touched.
           docker run --rm \
             -v "$GITHUB_WORKSPACE":/src:ro \
             -v "$RUNNER_TEMP/trivy-cache":/root/.cache/trivy \
             "$TRIVY_IMAGE" fs /src $IGNORE_ARG $SKIP_ARG \
             --scanners vuln,misconfig,license \
             --timeout 15m \
+            --db-repository ghcr.io/aquasecurity/trivy-db:2,mirror.gcr.io/aquasec/trivy-db:2 \
+            --java-db-repository ghcr.io/aquasecurity/trivy-java-db:1,mirror.gcr.io/aquasec/trivy-java-db:1 \
             --offline-scan \
             --include-dev-deps \
             --list-all-pkgs \
