@@ -139,7 +139,7 @@ jobs:
       # so this workflow and every image job that scans in place run the same
       # lines.
       - name: trivy image scan
-        uses: Kumbuka-ai/workflows/.github/actions/trivy-image-scan@feature/sprint-30-2-scan-the-built-image
+        uses: Kumbuka-ai/workflows/.github/actions/trivy-image-scan@main
         with:
           image: security-scan:${{ matrix.target.name }}
           name: ${{ matrix.target.name }}
