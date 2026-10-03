@@ -1,0 +1,30 @@
+# The image carries its application: the start file is in it and not empty.
+#
+# Runs right after the image is built and BEFORE any later step reads the image
+# (gates, scan, push), so an image without its application is red at the first
+# step that can tell — and the log prints the image id the later steps then
+# refer to. See check.sh for what it guards against and why it needs no shell
+# inside the image.
+name: image-startfile-check
+description: Fail unless the built image contains a non-empty start file at the given path.
+
+inputs:
+  image:
+    description: The image to check, as the local daemon knows it (a tag or an image id).
+    required: true
+  path:
+    description: >-
+      Extended regex for the start file's path inside the image, without the
+      leading slash, e.g. 'app/quarkus-run\.jar'. Anchored on both ends.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: start file check
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        START_PATH: ${{ inputs.path }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/check.sh" "$IMAGE" "$START_PATH"
