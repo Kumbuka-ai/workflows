@@ -1,0 +1,66 @@
+# Trivy against a container image that is ALREADY BUILT, in the job that built it.
+#
+# Why an action and not a job: a job has its own Docker daemon, so a scan job can
+# only scan an image it builds itself — a second build of the same artefact, and
+# not provably the image the build job produced, tested or pushed. As a step in the
+# building job, this scans exactly that image, by the id the build step printed:
+# build once, test it, scan it, and in a release push it.
+#
+# The scan itself (scan.sh) is the one reusable-security-image.yml ran, moved here
+# so both use the same lines: same scanners, same severities, same blocking logic.
+# reusable-security-image.yml still exists for repositories that build no image in
+# a job of their own; it builds, then calls this action.
+name: trivy-image-scan
+description: Scan an image that is already in the local Docker daemon with Trivy; fail on fixable findings at the given severities.
+
+inputs:
+  image:
+    description: The image to scan, as the local daemon knows it (a tag or an image id).
+    required: true
+  name:
+    description: A short name for the image, used in the report file name, the annotations and the job summary.
+    required: true
+  severity:
+    description: Severities that turn the run red. Everything below is reported.
+    required: false
+    default: HIGH,CRITICAL
+  db-seed-dir:
+    description: >-
+      Where the runner image keeps preloaded Trivy databases. Absent on hosted
+      runners, which is fine: the scan then downloads them, as it always did.
+    required: false
+    default: /opt/trivy-db
+  db-max-age-hours:
+    description: A preloaded database older than this is not used; the scan warns and downloads a fresh one.
+    required: false
+    default: '24'
+
+runs:
+  using: composite
+  steps:
+    - name: trivy image scan
+      shell: bash
+      env:
+        # Pinned by digest. Version behind it: trivy 0.74.0. The runner image
+        # preloads its databases with the same pin (infra, profile `runner`), so
+        # a database it seeds is one this Trivy can read.
+        TRIVY_IMAGE: aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+        IMAGE_REF: ${{ inputs.image }}
+        IMAGE_NAME: ${{ inputs.name }}
+        SEVERITY: ${{ inputs.severity }}
+        DB_SEED_DIR: ${{ inputs.db-seed-dir }}
+        DB_MAX_AGE_HOURS: ${{ inputs.db-max-age-hours }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/scan.sh"
+
+    # Each job has its own workspace, so each uploads what it produced.
+    # The overview script reads these rather than scraping logs.
+    - name: keep the report
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: security-report-image-${{ inputs.name }}
+        path: |
+          trivy-image-${{ inputs.name }}-report.json
+        if-no-files-found: ignore
+        retention-days: 30
