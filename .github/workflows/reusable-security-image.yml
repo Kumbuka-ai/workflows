@@ -70,30 +70,25 @@ jobs:
       IMAGE_NAME: ${{ matrix.target.name }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
-        with:
-          # THE DAEMON'S OWN BUILDER, NOT A CONTAINER ONE (satellite/29.17).
-          #
-          # Left to itself this action creates a `docker-container` builder, which
-          # runs BuildKit in its own container with its OWN content store — so it
-          # resolves every base image itself and never looks in the daemon's store.
-          # Measured on apollo 2026-09-28: the same build takes 37,9 s that way
-          # (2,3 s bootstrap + 35,6 s build, nearly all of it re-fetching
-          # base images the machine already has) against 0,94 s with the `docker`
-          # driver, which builds through the daemon and therefore sees them.
-          #
-          # THIS JOB MAY USE IT BECAUSE IT ASKS FOR NOTHING THE docker DRIVER LACKS:
-          # one native platform (linux/amd64), `load: true`, `push: false`, and no
-          # `cache-to`/`cache-from`. An external cache export or a second platform
-          # WOULD need the container driver — which is why the image jobs of the
-          # product repositories keep it, and each of them says so at its own step.
-          # Measured with the same flags this job passes, `--provenance=false
-          # --sbom=false --load --platform linux/amd64`: accepted, 944 ms.
-          #
-          # HOSTED RUNNERS ARE UNAFFECTED. Their default builder is the same docker
-          # driver over the same Docker they already run; they simply have no local
-          # store to profit from, and nothing here requires one.
-          driver: docker
+      # NO setup-buildx STEP, AND NO GITHUB CACHE: the build below runs on the
+      # daemon's own default builder (the `docker` driver), with nothing to set up.
+      #
+      # The default builder resolves base images from the daemon's own store, so
+      # on apollo it uses the images the golden image already holds. Measured on
+      # apollo 2026-09-28: 0,94 s for the build with the daemon's builder against
+      # 37,9 s with a `docker-container` builder that re-fetched every base image.
+      # This step used to call setup-buildx only to select `driver: docker`, which
+      # is the builder `build-push-action` uses when nobody sets one up.
+      #
+      # Organisation rule for jobs that run on apollo: no GitHub cache
+      # (`cache-from`/`cache-to: type=gha`, `actions/cache`, the `cache:` input of
+      # setup-node/setup-java) unless a measurement shows it to be faster. Measured
+      # in a real ee-worklist run: `type=gha` pulled base layers at 0,4 MB/s
+      # (158 MB in 383 s) while Docker Hub delivered ~9 MB/s in the same run.
+      # This job uses none, and must not start to.
+      #
+      # HOSTED RUNNERS ARE UNAFFECTED: their default builder is the same docker
+      # driver, so public callers build exactly as before.
 
       # The image is built here rather than taken from the chain's own image job
       # on purpose: this workflow must not reach into another job's artefacts,
