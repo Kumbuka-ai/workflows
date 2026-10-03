@@ -24,3 +24,14 @@ jobs:
         run: bash .github/actions/trivy-image-scan/tests/db-seed.test.sh
       - name: shellcheck
         run: shellcheck .github/actions/trivy-image-scan/*.sh .github/actions/trivy-image-scan/tests/*.sh
+
+  image-startfile-check:
+    name: image-startfile-check (an image without its application is red)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: present green; absent, empty, directory and prefix red
+        run: bash .github/actions/image-startfile-check/tests/check.test.sh
+      - name: shellcheck
+        run: shellcheck .github/actions/image-startfile-check/*.sh .github/actions/image-startfile-check/tests/*.sh
