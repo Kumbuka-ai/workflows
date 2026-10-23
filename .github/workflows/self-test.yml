@@ -1,3 +1,8 @@
+# Copyright (c) 2026 JBAConsult - Architekturberatung Johannes Bayer-Albert
+# All rights reserved. Copying, reproduction, distribution or any other
+# use of this file, in whole or in part, without the prior written
+# permission of the copyright holder is prohibited.
+
 # The executable tests of the actions in this repository.
 #
 # A guard that only exists as a file is not a guard: these run on every pull
@@ -16,7 +21,8 @@ permissions:
 jobs:
   trivy-image-scan:
     name: trivy-image-scan (database seed decision)
-    runs-on: ubuntu-latest
+    # Own branches run on apollo, fork pull requests on a hosted runner.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'apollo' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -27,7 +33,8 @@ jobs:
 
   image-startfile-check:
     name: image-startfile-check (an image without its application is red)
-    runs-on: ubuntu-latest
+    # Own branches run on apollo, fork pull requests on a hosted runner.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'apollo' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0

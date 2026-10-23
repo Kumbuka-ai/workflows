@@ -1,3 +1,8 @@
+# Copyright (c) 2026 JBAConsult - Architekturberatung Johannes Bayer-Albert
+# All rights reserved. Copying, reproduction, distribution or any other
+# use of this file, in whole or in part, without the prior written
+# permission of the copyright holder is prohibited.
+
 # One table for every repository's security gates, refreshed daily.
 #
 # For a single repository, red is the overview: the run failed, the summary says
@@ -27,7 +32,7 @@ permissions:
 jobs:
   overview:
     name: collect
-    runs-on: ubuntu-latest
+    runs-on: apollo
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
