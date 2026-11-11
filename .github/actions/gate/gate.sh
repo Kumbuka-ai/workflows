@@ -39,7 +39,7 @@ red=0
 rows=""
 while IFS=$'\t' read -r job result; do
   case "$result" in
-    success|skipped)
+    success|skipped|cancelled)
       echo "ok   $job: $result" ;;
     *)
       echo "::error title=gate::job '$job' ended $result"
