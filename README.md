@@ -89,6 +89,16 @@ distinction that matters: a repository carrying no package manifest at all
 legitimately resolves zero dependency targets, and that is reported, not failed.
 Manifests present but nothing resolved *is* a failure.
 
+## The required check: `gate`
+
+Required checks are set per check name in the organisation's rulesets, and a
+list of jobs cannot be kept right there: a job behind a paths filter or an
+`if:` stays *expected* forever, and a new job is missing silently. So each
+`ci.yml` carries one collecting job named `gate` that needs every other job and
+calls [`.github/actions/gate`](.github/actions/gate/action.yml); only `gate` is
+required. The job to paste and its mandatory parts:
+[docs/gate-job.md](docs/gate-job.md).
+
 ## Exceptions
 
 A fix that exists but cannot be adopted yet belongs in a `.trivyignore.yaml` at
