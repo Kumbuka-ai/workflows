@@ -1,0 +1,26 @@
+# The one required check of a workflow: the job `gate`, which needs every other
+# job of the file and calls this action with their results.
+#
+# Why one collected check instead of a required check per job: a job behind a
+# paths filter or an `if:` does not run on every pull request, and as a required
+# check it would stay "expected" forever; a new job would be missing from the
+# required list without anyone noticing. The gate job runs always and is red
+# exactly when a job before it failed or was cancelled. See gate.sh for the
+# rules and docs/gate-job.md for the job to paste into a ci.yml.
+name: gate
+description: Fail unless every job in toJSON(needs) ended in success or skipped; name every job that did not.
+
+inputs:
+  needs:
+    description: The calling job's toJSON(needs). An empty object is red.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: gate
+      shell: bash
+      env:
+        NEEDS_JSON: ${{ inputs.needs }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/gate.sh"
