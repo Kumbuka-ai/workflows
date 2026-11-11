@@ -65,3 +65,119 @@ jobs:
           "$RUNNER_TEMP/bin/shellcheck" --version
       - name: shellcheck
         run: shellcheck .github/actions/image-startfile-check/*.sh .github/actions/image-startfile-check/tests/*.sh
+
+  # No job here is named `gate`: that name is reserved for the required check of
+  # a ci.yml (docs/gate-job.md), and a self-test of that name would answer it.
+  gate-script:
+    name: gate-action (script cases, shellcheck)
+    # Own branches run on apollo, fork pull requests on a hosted runner.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'apollo' || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: success and skipped green; failure, cancelled, empty and unknown red
+        run: bash .github/actions/gate/tests/gate.test.sh
+      - name: Install shellcheck ${{ env.SHELLCHECK_VERSION }}
+        run: |
+          # The apollo runner image carries no shellcheck, the hosted one did.
+          # Into the job's own temp directory: the runner user has no sudo.
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSfL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ --strip-components=1 -C "$RUNNER_TEMP/bin" "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
+          chmod 0755 "$RUNNER_TEMP/bin/shellcheck"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/shellcheck" --version
+      - name: shellcheck
+        run: shellcheck .github/actions/gate/*.sh .github/actions/gate/tests/*.sh
+
+  # The action itself, called as a ci.yml calls it, once per case. A real failed
+  # or cancelled job would turn this run red, so these cases hand the action an
+  # input of the shape toJSON(needs) has; each step may fail, and the last step
+  # compares every outcome with the expectation written next to it.
+  gate-action:
+    name: gate-action (five cases through the action)
+    # Own branches run on apollo, fork pull requests on a hosted runner.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'apollo' || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: "case: all success"
+        id: all-success
+        continue-on-error: true
+        uses: ./.github/actions/gate
+        with:
+          needs: '{"build":{"result":"success","outputs":{}},"test":{"result":"success","outputs":{}}}'
+      - name: "case: one skipped among them"
+        id: one-skipped
+        continue-on-error: true
+        uses: ./.github/actions/gate
+        with:
+          needs: '{"build":{"result":"success","outputs":{}},"migrations":{"result":"skipped","outputs":{}},"test":{"result":"success","outputs":{}}}'
+      - name: "case: one failure"
+        id: one-failure
+        continue-on-error: true
+        uses: ./.github/actions/gate
+        with:
+          needs: '{"build":{"result":"success","outputs":{}},"test":{"result":"failure","outputs":{}}}'
+      - name: "case: one cancelled"
+        id: one-cancelled
+        continue-on-error: true
+        uses: ./.github/actions/gate
+        with:
+          needs: '{"build":{"result":"cancelled","outputs":{}},"test":{"result":"success","outputs":{}}}'
+      - name: "case: empty set"
+        id: empty-set
+        continue-on-error: true
+        uses: ./.github/actions/gate
+        with:
+          needs: '{}'
+      - name: every case has its expected outcome
+        env:
+          ALL_SUCCESS: ${{ steps.all-success.outcome }}
+          ONE_SKIPPED: ${{ steps.one-skipped.outcome }}
+          ONE_FAILURE: ${{ steps.one-failure.outcome }}
+          ONE_CANCELLED: ${{ steps.one-cancelled.outcome }}
+          EMPTY_SET: ${{ steps.empty-set.outcome }}
+        run: |
+          fails=0
+          expect() { # <case> <expected outcome> <actual outcome>
+            if [ "$2" = "$3" ]; then echo "PASS  $1: $3"
+            else echo "::error title=gate-action::case '$1' expected $2, got $3"; fails=$((fails+1)); fi
+          }
+          expect "all success"          success "$ALL_SUCCESS"
+          expect "one skipped"          success "$ONE_SKIPPED"
+          expect "one failure"          failure "$ONE_FAILURE"
+          expect "one cancelled"        failure "$ONE_CANCELLED"
+          expect "empty set"            failure "$EMPTY_SET"
+          [ "$fails" -eq 0 ]
+
+  # The same action on a real needs context: a job that ran and one skipped by
+  # its `if:`, exactly as a paths filter or a condition leaves it in a ci.yml.
+  gate-live-ran:
+    name: gate-action (live, a job that ran)
+    # Own branches run on apollo, fork pull requests on a hosted runner.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'apollo' || 'ubuntu-latest' }}
+    timeout-minutes: 2
+    steps:
+      - run: echo "ran"
+
+  gate-live-skipped:
+    name: gate-action (live, a skipped job)
+    if: ${{ false }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'apollo' || 'ubuntu-latest' }}
+    timeout-minutes: 2
+    steps:
+      - run: echo "never runs"
+
+  gate-live:
+    name: gate-action (live needs, success and skipped is green)
+    needs: [gate-live-ran, gate-live-skipped]
+    if: always()
+    # Own branches run on apollo, fork pull requests on a hosted runner.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'apollo' || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: ./.github/actions/gate
+        with:
+          needs: ${{ toJSON(needs) }}
