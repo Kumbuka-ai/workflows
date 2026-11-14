@@ -278,9 +278,10 @@ jobs:
   # THE PROOF OF NON-BLOCKING. The fragment job is made to fail on purpose (a
   # module name the schema refuses), and it is hung in exactly as a release
   # workflow hangs it in (docs/docs-fragment.md): continue-on-error on the
-  # calling job, no release job needs it, not under a `gate`. The run must end
-  # green all the same, and the job after it shows that the fragment job really
-  # failed rather than being skipped.
+  # called jobs (GitHub refuses it on this calling job), nothing needs it for
+  # its own success, not under a `gate`. The run must end green all the same,
+  # and the job after it shows that the fragment job really failed rather than
+  # being skipped.
   docs-fragment-failing:
     name: docs-fragment (deliberately failing, hung in non-blocking)
     uses: ./.github/workflows/reusable-docs-fragment.yml
@@ -313,12 +314,18 @@ jobs:
         run: |
           set -euo pipefail
           echo "needs.docs-fragment-failing.result: $NEEDS_RESULT"
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
-            --jq '.jobs[] | [.name, .status, (.conclusion // "none")] | @tsv' > jobs.tsv
-          cat jobs.tsv
-          conclusion=$(awk -F'\t' -v p="$CALLER / fragment" 'index($1, p) == 1 { print $3 }' jobs.tsv)
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" > jobs.json
+          jq -r '.jobs[] | [.name, .status, (.conclusion // "none")] | @tsv' jobs.json
+          conclusion=$(jq -r --arg p "$CALLER / fragment" '.jobs[] | select(.name | startswith($p)) | .conclusion // "none"' jobs.json)
           if [ "$conclusion" != "failure" ]; then
             echo "::error title=docs-fragment::the deliberately failing fragment job ended '${conclusion:-absent}', not failure — the proof proves nothing"
             exit 1
           fi
-          echo "PASS  the fragment job failed, and this job after it runs: the failure blocked nothing"
+          # It must fail where it was made to fail, at the schema; a failure
+          # anywhere earlier would prove the non-blocking on a different defect.
+          failed_step=$(jq -r --arg p "$CALLER / fragment" '.jobs[] | select(.name | startswith($p)) | .steps[] | select(.conclusion == "failure") | .name' jobs.json)
+          if [ "$failed_step" != "check fragment.json against the schema" ]; then
+            echo "::error title=docs-fragment::the fragment job failed in '${failed_step:-no step}', not at the schema check"
+            exit 1
+          fi
+          echo "PASS  the fragment job failed at the schema check, and this job after it runs: the failure blocked nothing"

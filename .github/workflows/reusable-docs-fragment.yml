@@ -8,11 +8,11 @@
 # asked, put on GHCR as an OCI artefact. The contract is docs/docs-fragment.md.
 #
 # NON-BLOCKING BY CONTRACT. A missing fragment is a finding of whoever collects
-# the fragments, never a reason to hold a release. So this job fails loud — a
-# broken fragment is red, never a green job with nothing in it — and the CALLER
-# hangs it in so that red stops nothing: no release job needs it, the collecting
-# `gate` job does not list it. The paste-ready call is in docs/docs-fragment.md
-# and in README.md.
+# the fragments, never a reason to hold a release. So each job here fails loud —
+# a broken fragment is red, never a green job with nothing in it — and carries
+# continue-on-error, so that red does not fail the caller's run. The caller
+# does the rest: no release job needs the call, the collecting `gate` job does
+# not list it. The paste-ready call is in docs/docs-fragment.md and README.md.
 #
 # Rights: contents: read for everything; packages: write only in the publish
 # job, which runs only with `publish: true`. The caller has to grant

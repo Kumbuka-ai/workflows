@@ -112,13 +112,12 @@ In the module's release workflow, the job that runs at the release tag:
 
 ```yaml
   # The documentation fragment of this release. NON-BLOCKING ON PURPOSE: a
-  # missing fragment is a finding, never a reason to hold a release. So
-  # continue-on-error stays, no job of this file needs this one, and it is NOT
-  # in the needs list of `gate`.
+  # missing fragment is a finding, never a reason to hold a release. So no job
+  # of this file needs this one, and it is NOT in the needs list of `gate`.
+  # (continue-on-error is carried by the called jobs; GitHub refuses it here.)
   docs-fragment:
     uses: Kumbuka-ai/workflows/.github/workflows/reusable-docs-fragment.yml@main
     if: startsWith(github.ref, 'refs/tags/')   # only where the file also runs on other events
-    continue-on-error: true
     permissions:
       contents: read
       packages: write     # for the publish job; the caller must hold what the called jobs declare
@@ -133,7 +132,7 @@ The three parts that keep it non-blocking:
 
 | part | why |
 |---|---|
-| `continue-on-error: true` on the calling job | a failed fragment job does not turn the run red |
+| `continue-on-error: true` on every job of the called workflow | a failed fragment job does not turn the run red. It sits there and not on the calling job because GitHub refuses `continue-on-error` on a job that calls a reusable workflow — the workflow file does not start at all (measured in this repository's self-test). So it cannot be forgotten by a caller either. |
 | no `needs: docs-fragment` anywhere | no release step waits for it or is skipped because it failed |
 | not in the `needs` of `gate` ([gate-job.md](gate-job.md)) | the one required check does not look at it; this is the single exception to "every job of the file belongs in `gate`" |
 

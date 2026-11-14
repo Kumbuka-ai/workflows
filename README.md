@@ -113,17 +113,17 @@ GHCR as an OCI artefact, for whoever documents the platform as delivered. The
 contract, the schema and the artefact's name are in
 [docs/docs-fragment.md](docs/docs-fragment.md).
 
-A missing fragment is a finding, never a reason to hold a release, so the job is
-hung in so that its failure turns nothing red — `continue-on-error` on the
-calling job, no job `needs` it, and it is **not** in the `needs` of `gate`:
+A missing fragment is a finding, never a reason to hold a release, so its
+failure turns nothing red: the called jobs carry `continue-on-error` (GitHub
+refuses it on the calling job), no job `needs` the call, and it is **not** in
+the `needs` of `gate`:
 
 ```yaml
-  # NON-BLOCKING ON PURPOSE: keep continue-on-error, let no job need this one,
-  # and leave it out of the needs list of `gate`.
+  # NON-BLOCKING ON PURPOSE: let no job need this one, and leave it out of the
+  # needs list of `gate`.
   docs-fragment:
     uses: Kumbuka-ai/workflows/.github/workflows/reusable-docs-fragment.yml@main
     if: startsWith(github.ref, 'refs/tags/')   # only where the file also runs on other events
-    continue-on-error: true
     permissions:
       contents: read
       packages: write
