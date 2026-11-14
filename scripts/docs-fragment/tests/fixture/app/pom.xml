@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Copyright (c) 2026 JBAConsult - Architekturberatung Johannes Bayer-Albert
+All rights reserved. Copying, reproduction, distribution or any other
+use of this file, in whole or in part, without the prior written
+permission of the copyright holder is prohibited.
+-->
+<!-- Fixture of the docs-fragment tests. Never built. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>example</groupId>
+    <artifactId>fixture-module</artifactId>
+    <version>1.2.3</version>
+  </parent>
+  <artifactId>app</artifactId>
+</project>

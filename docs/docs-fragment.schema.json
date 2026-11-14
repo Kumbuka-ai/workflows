@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Kumbuka-ai/workflows/blob/main/docs/docs-fragment.schema.json",
+  "title": "Documentation fragment of a module (fragment.json)",
+  "description": "The contract is docs/docs-fragment.md. Unknown fields are allowed on purpose: a reader skips what it does not know, so an optional part added later under a new minor schema_version does not break an older reader.",
+  "type": "object",
+  "required": ["schema_version", "module", "version", "commit", "produced_at", "workspace"],
+  "properties": {
+    "schema_version": {
+      "description": "major.minor. A reader of major 1 reads every 1.x and skips fields it does not know.",
+      "type": "string",
+      "pattern": "^1\\.[0-9]+$"
+    },
+    "module": {
+      "description": "Name of the module, lower case; the name of the calling repository unless the caller passes another.",
+      "type": "string",
+      "pattern": "^[a-z0-9]+([._-][a-z0-9]+)*$",
+      "maxLength": 100
+    },
+    "version": {
+      "description": "The release tag the fragment was produced at, as the module tags it (vX.Y.Z or X.Y.Z). Must be a valid OCI tag, because it is the tag of the artefact.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$"
+    },
+    "commit": {
+      "description": "Full SHA-1 of the commit the fragment was produced from.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "produced_at": {
+      "description": "UTC time of production, RFC 3339 with Z. The one field that differs between two productions from the same commit.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "workspace": {
+      "description": "Structurizr workspace of the module in JSON form: one software system carrying one container, the module.",
+      "type": "object",
+      "required": ["name", "model", "views"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "model": {
+          "type": "object",
+          "required": ["softwareSystems"],
+          "properties": {
+            "softwareSystems": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["id", "name", "containers"],
+                "properties": {
+                  "id": { "type": "string", "minLength": 1 },
+                  "name": { "type": "string", "minLength": 1 },
+                  "containers": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": ["id", "name", "properties"],
+                      "properties": {
+                        "id": { "type": "string", "minLength": 1 },
+                        "name": { "type": "string", "minLength": 1 },
+                        "properties": {
+                          "type": "object",
+                          "required": ["module", "version", "commit"],
+                          "additionalProperties": { "type": "string" }
+                        },
+                        "components": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": ["id", "name"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "views": { "type": "object" }
+      }
+    }
+  }
+}
