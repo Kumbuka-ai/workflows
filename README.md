@@ -1,3 +1,9 @@
+<!--
+Copyright (c) 2026 JBAConsult - Architekturberatung Johannes Bayer-Albert
+All rights reserved. Copying, reproduction, distribution or any other
+use of this file, in whole or in part, without the prior written
+permission of the copyright holder is prohibited.
+-->
 # Shared CI security gates
 
 Semgrep OSS, Trivy and Gitleaks as reusable workflows, called by the
@@ -98,6 +104,38 @@ list of jobs cannot be kept right there: a job behind a paths filter or an
 calls [`.github/actions/gate`](.github/actions/gate/action.yml); only `gate` is
 required. The job to paste and its mandatory parts:
 [docs/gate-job.md](docs/gate-job.md).
+
+## The documentation fragment: non-blocking
+
+At its release tag every module produces a documentation fragment — a
+Structurizr workspace of the module plus its C4-PlantUML views — and puts it on
+GHCR as an OCI artefact, for whoever documents the platform as delivered. The
+contract, the schema and the artefact's name are in
+[docs/docs-fragment.md](docs/docs-fragment.md).
+
+A missing fragment is a finding, never a reason to hold a release, so the job is
+hung in so that its failure turns nothing red — `continue-on-error` on the
+calling job, no job `needs` it, and it is **not** in the `needs` of `gate`:
+
+```yaml
+  # NON-BLOCKING ON PURPOSE: keep continue-on-error, let no job need this one,
+  # and leave it out of the needs list of `gate`.
+  docs-fragment:
+    uses: Kumbuka-ai/workflows/.github/workflows/reusable-docs-fragment.yml@main
+    if: startsWith(github.ref, 'refs/tags/')   # only where the file also runs on other events
+    continue-on-error: true
+    permissions:
+      contents: read
+      packages: write
+    with:
+      module: ${{ github.event.repository.name }}   # lower case
+      version: ${{ github.ref_name }}
+      publish: true
+      runs-on: apollo     # public repositories leave it out
+```
+
+With `publish: false` the fragment is produced, checked and kept as a workflow
+artefact only, without touching GHCR.
 
 ## Exceptions
 

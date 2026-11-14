@@ -181,3 +181,145 @@ jobs:
       - uses: ./.github/actions/gate
         with:
           needs: ${{ toJSON(needs) }}
+
+  # The documentation fragment (docs/docs-fragment.md): the scripts on their
+  # fixture, the reusable workflow called as a module calls it, and the proof
+  # that a failing fragment job blocks nothing.
+  docs-fragment-scripts:
+    name: docs-fragment (generator, schema, publish into a layout, shellcheck)
+    # Own branches run on apollo, fork pull requests on a hosted runner.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'apollo' || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Install yajsv and oras
+        run: |
+          bash scripts/docs-fragment/install-tools.sh "$RUNNER_TEMP/docs-fragment-bin"
+          echo "$RUNNER_TEMP/docs-fragment-bin" >> "$GITHUB_PATH"
+      - name: fragment from the fixture passes the schema, each missing field fails, two runs byte-identical
+        run: bash scripts/docs-fragment/tests/generate.test.sh
+      - name: publish into an OCI layout, both version forms, our artefact type
+        run: bash scripts/docs-fragment/tests/publish.test.sh
+      - name: Install shellcheck ${{ env.SHELLCHECK_VERSION }}
+        run: |
+          # The apollo runner image carries no shellcheck, the hosted one did.
+          # Into the job's own temp directory: the runner user has no sudo.
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSfL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ --strip-components=1 -C "$RUNNER_TEMP/bin" "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
+          chmod 0755 "$RUNNER_TEMP/bin/shellcheck"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/shellcheck" --version
+      - name: shellcheck
+        run: shellcheck scripts/docs-fragment/*.sh scripts/docs-fragment/tests/*.sh
+
+  # The reusable workflow as a module calls it, with publish false: nothing
+  # reaches GHCR. packages: write is granted because GitHub checks at start that
+  # the caller holds what every called job declares, the skipped publish job
+  # included; publish false is what keeps it from being used.
+  docs-fragment-call:
+    name: docs-fragment (called as a module calls it, publish false)
+    uses: ./.github/workflows/reusable-docs-fragment.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      module: workflows
+      version: v0.0.0-self-test
+      publish: false
+      runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'apollo' || 'ubuntu-latest' }}
+      # The scripts and the schema of the commit under test, not of main.
+      tools-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  docs-fragment-call-result:
+    name: docs-fragment (the call kept fragment.json and plantuml/, published nothing)
+    needs: docs-fragment-call
+    # Own branches run on apollo, fork pull requests on a hosted runner.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'apollo' || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: docs-fragment-workflows
+          path: fragment
+      - name: the artefact holds the fragment of this commit and its views
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          fails=0
+          expect() { # <what> <expected> <actual>
+            if [ "$2" = "$3" ]; then echo "PASS  $1: $3"
+            else echo "::error title=docs-fragment::$1: expected '$2', got '$3'"; fails=$((fails+1)); fi
+          }
+          expect "module"  workflows         "$(jq -r .module fragment/fragment.json)"
+          expect "version" v0.0.0-self-test  "$(jq -r .version fragment/fragment.json)"
+          expect "commit"  "$EXPECTED_COMMIT" "$(jq -r .commit fragment/fragment.json)"
+          expect "view"    "@startuml workflows-container" "$(head -n 1 fragment/plantuml/workflows-container.puml)"
+          [ "$fails" -eq 0 ]
+      - name: the publish job did not run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CALLER: docs-fragment (called as a module calls it, publish false)
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | [.name, .status, (.conclusion // "none")] | @tsv' > jobs.tsv
+          cat jobs.tsv
+          ran=$(awk -F'\t' -v p="$CALLER / publish" 'index($1, p) == 1 && $3 != "skipped"' jobs.tsv)
+          if [ -n "$ran" ]; then
+            echo "::error title=docs-fragment::the publish job ran with publish false: $ran"
+            exit 1
+          fi
+          echo "PASS  no publish job ran"
+
+  # THE PROOF OF NON-BLOCKING. The fragment job is made to fail on purpose (a
+  # module name the schema refuses), and it is hung in exactly as a release
+  # workflow hangs it in (docs/docs-fragment.md): continue-on-error on the
+  # calling job, no release job needs it, not under a `gate`. The run must end
+  # green all the same, and the job after it shows that the fragment job really
+  # failed rather than being skipped.
+  docs-fragment-failing:
+    name: docs-fragment (deliberately failing, hung in non-blocking)
+    uses: ./.github/workflows/reusable-docs-fragment.yml
+    continue-on-error: true
+    permissions:
+      contents: read
+      packages: write
+    with:
+      module: Not A Module
+      version: v0.0.0-self-test
+      publish: false
+      runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'apollo' || 'ubuntu-latest' }}
+      tools-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+  docs-fragment-nonblocking:
+    name: docs-fragment (the failed fragment job blocked nothing)
+    needs: docs-fragment-failing
+    if: always()
+    # Own branches run on apollo, fork pull requests on a hosted runner.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'apollo' || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: the fragment job failed, it was not skipped
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CALLER: docs-fragment (deliberately failing, hung in non-blocking)
+          NEEDS_RESULT: ${{ needs.docs-fragment-failing.result }}
+        run: |
+          set -euo pipefail
+          echo "needs.docs-fragment-failing.result: $NEEDS_RESULT"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | [.name, .status, (.conclusion // "none")] | @tsv' > jobs.tsv
+          cat jobs.tsv
+          conclusion=$(awk -F'\t' -v p="$CALLER / fragment" 'index($1, p) == 1 { print $3 }' jobs.tsv)
+          if [ "$conclusion" != "failure" ]; then
+            echo "::error title=docs-fragment::the deliberately failing fragment job ended '${conclusion:-absent}', not failure — the proof proves nothing"
+            exit 1
+          fi
+          echo "PASS  the fragment job failed, and this job after it runs: the failure blocked nothing"

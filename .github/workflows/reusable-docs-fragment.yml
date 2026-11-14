@@ -1,0 +1,197 @@
+# Copyright (c) 2026 JBAConsult - Architekturberatung Johannes Bayer-Albert
+# All rights reserved. Copying, reproduction, distribution or any other
+# use of this file, in whole or in part, without the prior written
+# permission of the copyright holder is prohibited.
+
+# The documentation fragment of a module: produced from the caller's checkout at
+# its release tag, checked against the schema, exported as C4-PlantUML and, when
+# asked, put on GHCR as an OCI artefact. The contract is docs/docs-fragment.md.
+#
+# NON-BLOCKING BY CONTRACT. A missing fragment is a finding of whoever collects
+# the fragments, never a reason to hold a release. So this job fails loud — a
+# broken fragment is red, never a green job with nothing in it — and the CALLER
+# hangs it in so that red stops nothing: no release job needs it, the collecting
+# `gate` job does not list it. The paste-ready call is in docs/docs-fragment.md
+# and in README.md.
+#
+# Rights: contents: read for everything; packages: write only in the publish
+# job, which runs only with `publish: true`. The caller has to grant
+# packages: write to the calling job, because a called workflow cannot be given
+# more than its caller holds — and GitHub checks that for every job of this
+# file when the run starts, also for the publish job that `publish: false`
+# skips.
+#
+# The scripts and the schema are taken from this repository at `tools-ref`,
+# @main by default, for the reason reusable-security.yml gives for its @main:
+# a change to the contract has to reach every module at once. The tools the
+# runner lacks (yajsv, oras) are fetched pinned by version and SHA-256 into the
+# job's temp directory; the runner user has no sudo.
+
+name: docs fragment
+
+on:
+  workflow_call:
+    inputs:
+      module:
+        description: >-
+          Name of the module, lower case (letters, digits, `.`, `_`, `-`).
+          Usually the repository's name.
+        required: true
+        type: string
+      version:
+        description: >-
+          The release tag the fragment is produced at, as the module tags it
+          (vX.Y.Z or X.Y.Z). It becomes the tag of the artefact.
+        required: true
+        type: string
+      publish:
+        description: >-
+          true: put the fragment on GHCR. false: produce and check it and keep
+          it only as a workflow artefact, without touching GHCR.
+        required: false
+        type: boolean
+        default: false
+      runs-on:
+        description: >-
+          Runner label set. Defaults to hosted, like the security workflows and
+          for the same reason: public repositories call this too. The private
+          repositories of this organisation pass `apollo`.
+        required: false
+        type: string
+        default: ubuntu-latest
+      tools-ref:
+        description: >-
+          Ref of Kumbuka-ai/workflows the scripts and the schema are taken from.
+          Callers leave it; the self-test of this repository passes the commit
+          under test.
+        required: false
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+
+  fragment:
+    name: fragment (produce, check, export)
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 10
+    steps:
+      - name: check out the module
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          path: module
+          persist-credentials: false
+
+      - name: check out the fragment tools
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: Kumbuka-ai/workflows
+          ref: ${{ inputs.tools-ref }}
+          path: docs-fragment-tools
+          persist-credentials: false
+
+      - name: install yajsv and oras
+        run: |
+          bash docs-fragment-tools/scripts/docs-fragment/install-tools.sh "$RUNNER_TEMP/docs-fragment-bin"
+          echo "$RUNNER_TEMP/docs-fragment-bin" >> "$GITHUB_PATH"
+
+      - name: produce fragment.json
+        env:
+          MODULE: ${{ inputs.module }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          bash docs-fragment-tools/scripts/docs-fragment/generate.sh \
+            --module "$MODULE" --version "$VERSION" \
+            --source module --out "$RUNNER_TEMP/docs-fragment"
+
+      - name: check fragment.json against the schema
+        run: |
+          yajsv -s docs-fragment-tools/docs/docs-fragment.schema.json "$RUNNER_TEMP/docs-fragment/fragment.json"
+
+      - name: export C4-PlantUML
+        run: |
+          bash docs-fragment-tools/scripts/docs-fragment/export-plantuml.sh \
+            --fragment "$RUNNER_TEMP/docs-fragment/fragment.json" \
+            --out "$RUNNER_TEMP/docs-fragment/plantuml"
+
+      - name: summary
+        env:
+          MODULE: ${{ inputs.module }}
+          VERSION: ${{ inputs.version }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          {
+            echo "### Documentation fragment"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| module | \`$MODULE\` |"
+            echo "| version | \`$VERSION\` |"
+            echo "| commit | \`$(jq -r .commit "$RUNNER_TEMP/docs-fragment/fragment.json")\` |"
+            echo "| views | $(find "$RUNNER_TEMP/docs-fragment/plantuml" -name '*.puml' | wc -l) |"
+            echo "| publish | $PUBLISH |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Always, also with publish true: the publish job takes exactly this
+      # artefact, so what lands on GHCR is what was checked here.
+      - name: keep the fragment
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: docs-fragment-${{ inputs.module }}
+          path: |
+            ${{ runner.temp }}/docs-fragment/fragment.json
+            ${{ runner.temp }}/docs-fragment/plantuml/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: publish (GHCR)
+    needs: fragment
+    if: ${{ inputs.publish }}
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: check out the fragment tools
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: Kumbuka-ai/workflows
+          ref: ${{ inputs.tools-ref }}
+          path: docs-fragment-tools
+          persist-credentials: false
+
+      - name: install yajsv and oras
+        run: |
+          bash docs-fragment-tools/scripts/docs-fragment/install-tools.sh "$RUNNER_TEMP/docs-fragment-bin"
+          echo "$RUNNER_TEMP/docs-fragment-bin" >> "$GITHUB_PATH"
+
+      - name: take the checked fragment
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: docs-fragment-${{ inputs.module }}
+          path: ${{ runner.temp }}/docs-fragment
+
+      # The credentials go to a file in the job's temp directory, never to
+      # ~/.docker: on a self-hosted runner that file outlives the job.
+      - name: push to GHCR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          auth="$RUNNER_TEMP/docs-fragment-auth.json"
+          repository="ghcr.io/$(tr '[:upper:]' '[:lower:]' <<<"$GITHUB_REPOSITORY")-docs-fragment"
+          printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin --registry-config "$auth"
+          bash docs-fragment-tools/scripts/docs-fragment/publish.sh \
+            --dir "$RUNNER_TEMP/docs-fragment" --version "$VERSION" \
+            --repository "$repository" --registry-config "$auth" \
+            --source-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          echo "Published \`$repository:$VERSION\`." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: forget the credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/docs-fragment-auth.json"
