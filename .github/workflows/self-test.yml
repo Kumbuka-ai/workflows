@@ -248,12 +248,14 @@ jobs:
       - name: the artefact holds the fragment of this commit and its views
         env:
           EXPECTED_COMMIT: ${{ github.sha }}
+          CHECKED: ${{ needs.docs-fragment-call.outputs.checked }}
         run: |
           fails=0
           expect() { # <what> <expected> <actual>
             if [ "$2" = "$3" ]; then echo "PASS  $1: $3"
             else echo "::error title=docs-fragment::$1: expected '$2', got '$3'"; fails=$((fails+1)); fi
           }
+          expect "output checked (what publish waits for)" true "$CHECKED"
           expect "module"  workflows         "$(jq -r .module fragment/fragment.json)"
           expect "version" v0.0.0-self-test  "$(jq -r .version fragment/fragment.json)"
           expect "commit"  "$EXPECTED_COMMIT" "$(jq -r .commit fragment/fragment.json)"
@@ -311,9 +313,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CALLER: docs-fragment (deliberately failing, hung in non-blocking)
           NEEDS_RESULT: ${{ needs.docs-fragment-failing.result }}
+          CHECKED: ${{ needs.docs-fragment-failing.outputs.checked }}
         run: |
           set -euo pipefail
+          # The result of a failed non-blocking call reads success; printed for
+          # the record, it decides nothing. The job list below does.
           echo "needs.docs-fragment-failing.result: $NEEDS_RESULT"
+          # Publishing waits for this output; a failed fragment must not set it.
+          if [ "$CHECKED" = "true" ]; then
+            echo "::error title=docs-fragment::the failed fragment job set checked=true, so a publish would follow it"
+            exit 1
+          fi
+          echo "PASS  the failed fragment job left checked unset ('$CHECKED'): nothing would be published"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" > jobs.json
           jq -r '.jobs[] | [.name, .status, (.conclusion // "none")] | @tsv' jobs.json
           conclusion=$(jq -r --arg p "$CALLER / fragment" '.jobs[] | select(.name | startswith($p)) | .conclusion // "none"' jobs.json)

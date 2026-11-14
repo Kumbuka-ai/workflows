@@ -67,6 +67,13 @@ on:
         required: false
         type: string
         default: main
+    outputs:
+      checked:
+        description: >-
+          'true' when the fragment was produced, passed the schema, was exported
+          and kept; empty otherwise. The job's result cannot say it: a failed
+          non-blocking job reads `success`.
+        value: ${{ jobs.fragment.outputs.checked }}
 
 permissions:
   contents: read
@@ -81,6 +88,8 @@ jobs:
     # refuses continue-on-error on a job that calls a reusable workflow. The job
     # still fails, loud and visible; it only does not fail the caller's run.
     continue-on-error: true
+    outputs:
+      checked: ${{ steps.checked.outputs.checked }}
     steps:
       - name: check out the module
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -150,12 +159,18 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: the fragment is checked and kept
+        id: checked
+        run: echo "checked=true" >> "$GITHUB_OUTPUT"
+
   publish:
     name: publish (GHCR)
     needs: fragment
-    # A failed fragment job is non-blocking, so it does not by itself stop the
-    # jobs after it: the result is asked for explicitly.
-    if: ${{ inputs.publish && needs.fragment.result == 'success' }}
+    # A failed fragment job is non-blocking, and its needs result then reads
+    # `success` (measured in the self-test), so the result says nothing here.
+    # What counts is the output its last step sets only when every step before
+    # it passed.
+    if: ${{ inputs.publish && needs.fragment.outputs.checked == 'true' }}
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 10
     # Non-blocking like the fragment job, for the same reason.

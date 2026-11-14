@@ -144,6 +144,9 @@ Inputs: `module` and `version` (required), `publish` (default `false`: produce,
 check and keep the fragment as a workflow artefact `docs-fragment-<module>`
 without touching GHCR), `runs-on` (default `ubuntu-latest`), `tools-ref` (the
 ref of this repository the scripts and the schema come from, default `main`).
+Output: `checked`, `'true'` when the fragment was produced, passed the schema,
+was exported and kept. Read it rather than the call's `result`: a failed
+non-blocking job reports `success` to the jobs that need it.
 
 Rights: `contents: read` throughout; `packages: write` only in the publish job,
 which runs only with `publish: true` and pushes with the caller's
