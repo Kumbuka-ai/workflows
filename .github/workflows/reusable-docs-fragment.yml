@@ -87,7 +87,7 @@ jobs:
     # Non-blocking, carried here because the caller cannot carry it: GitHub
     # refuses continue-on-error on a job that calls a reusable workflow. The job
     # still fails, loud and visible; it only does not fail the caller's run.
-    continue-on-error: true
+    continue-on-error: false
     outputs:
       checked: ${{ steps.checked.outputs.checked }}
     steps:
