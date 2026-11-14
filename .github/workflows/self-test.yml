@@ -284,7 +284,6 @@ jobs:
   docs-fragment-failing:
     name: docs-fragment (deliberately failing, hung in non-blocking)
     uses: ./.github/workflows/reusable-docs-fragment.yml
-    continue-on-error: true
     permissions:
       contents: read
       packages: write

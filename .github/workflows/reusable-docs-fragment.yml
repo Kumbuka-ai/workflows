@@ -77,6 +77,10 @@ jobs:
     name: fragment (produce, check, export)
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 10
+    # Non-blocking, carried here because the caller cannot carry it: GitHub
+    # refuses continue-on-error on a job that calls a reusable workflow. The job
+    # still fails, loud and visible; it only does not fail the caller's run.
+    continue-on-error: true
     steps:
       - name: check out the module
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -149,9 +153,13 @@ jobs:
   publish:
     name: publish (GHCR)
     needs: fragment
-    if: ${{ inputs.publish }}
+    # A failed fragment job is non-blocking, so it does not by itself stop the
+    # jobs after it: the result is asked for explicitly.
+    if: ${{ inputs.publish && needs.fragment.result == 'success' }}
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 10
+    # Non-blocking like the fragment job, for the same reason.
+    continue-on-error: true
     permissions:
       contents: read
       packages: write
